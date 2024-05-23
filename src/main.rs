@@ -3,10 +3,9 @@ use std::io::{BufRead, Write};
 use std::str::FromStr;
 
 use base58::ToBase58;
-use parity_scale_codec::{Decode, Encode};
+use parity_scale_codec::Decode;
 use subxt::{OnlineClient, PolkadotConfig};
-use subxt::tx::{Payload, Signer};
-use subxt::utils::{AccountId32, MultiAddress, to_hex};
+use subxt::utils::{AccountId32, MultiAddress};
 use subxt_signer::SecretUri;
 use subxt_signer::sr25519::Keypair;
 
@@ -14,8 +13,8 @@ use polkadot::conviction_voting::calls::types::Vote;
 use polkadot::proxy::calls::types::Proxy;
 use polkadot::proxy::events::{ProxyAdded, ProxyExecuted};
 use polkadot::runtime_types::pallet_conviction_voting::pallet::Call::vote;
-use polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote;
 use polkadot::runtime_types::polkadot_runtime::RuntimeCall::ConvictionVoting;
+
 use crate::polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard;
 
 #[subxt::subxt(runtime_metadata_path = "assets/polkadot-metadata.scale")]
@@ -58,20 +57,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let proxy_payload = polkadot::tx().proxy().proxy(real, None, voting_call);
-
+    let proxy_payload = proxy_payload.unvalidated();
 
     // let vote_payload = polkadot::tx().conviction_voting().vote(
     //     poll_index,
-    //     AccountVote::Standard {
+    //     Standard {
     //         vote: polkadot::runtime_types::pallet_conviction_voting::vote::Vote(vote),
     //         balance
     //     }
     // );
 
     println!("Proxied voting request: {:?}", proxy_payload.call_data());
-
-    let encoded_hex = to_hex(proxy_payload.call_data().encode());
-    println!("Encoded hex {}", encoded_hex);
 
     let tx_progress = api
         .tx()
@@ -80,7 +76,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Tx submitted, waiting for finalised success...");
 
-    tx_progress.wait_for_finalized_success().await?;
+    tx_progress
+        .wait_for_finalized_success()
+        .await?
+        .find_first::<ProxyExecuted>()?
+        .unwrap()
+        .result
+        .map_err(|e| {
+            // if let DispatchError::Module(module_error) = e {
+            //     // TODO Figure out the underlying convition_voting error
+            //     format!("{:?}", e)
+            // } else {
+            //     format!("{:?}", e)
+            // }
+            format!("{:?}", e)
+        })?;
 
     println!("Voting successful");
 
