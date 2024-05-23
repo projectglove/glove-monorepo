@@ -1,0 +1,14 @@
+[package]
+name = "glove"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base58 = "0.2.0"
+blake2 = "0.10.6"
+futures = "0.3.30"
+hex = "0.4.3"
+parity-scale-codec = "3.6.12"
+subxt = "0.36.0"
+subxt-signer = { version = "0.36.0", features = ["subxt"] }
+tokio = { version = "1.37.0", features = ["rt", "rt-multi-thread", "macros"] }
