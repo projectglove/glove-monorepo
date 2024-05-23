@@ -1,1 +1,1 @@
-# netting-service
+# glove-monorepo
