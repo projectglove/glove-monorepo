@@ -3,6 +3,7 @@ use std::io::{BufRead, Write};
 use std::str::FromStr;
 
 use base58::ToBase58;
+use clap::Parser;
 use parity_scale_codec::Decode;
 use subxt::{OnlineClient, PolkadotConfig};
 use subxt::utils::{AccountId32, MultiAddress};
@@ -22,10 +23,25 @@ pub mod polkadot {}
 
 const SUBSTRATE_SS58_PREFIX: u8 = 42;
 
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Args {
+    /// Secret phrase for the Glove proxy account
+    #[arg(long)]
+    proxy_secret_phrase: String,
+
+    /// URL for the network endpoint.
+    ///
+    /// See https://wiki.polkadot.network/docs/maintain-endpoints for more information.
+    #[arg(long)]
+    network_url: String
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let secret_phrase = env::args().nth(1).ok_or("Proxy account secret phrase missing")?;
-    let proxy_keypair = Keypair::from_uri(&SecretUri::from_str(&secret_phrase)?)?;
+    let args = Args::parse();
+
+    let proxy_keypair = Keypair::from_uri(&SecretUri::from_str(&args.proxy_secret_phrase)?)?;
     println!("Proxy address: {}", display_address(&proxy_keypair.public_key().to_address::<()>()));
 
     let stdin = io::stdin();
@@ -43,8 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     io::stdout().flush().unwrap();
     let balance = (iterator.next().unwrap().unwrap().parse::<f64>().unwrap() * 1e12) as u128;
 
-    // let api = OnlineClient::<PolkadotConfig>::from_url("wss://rpc.polkadot.io:443").await?;
-    let api = OnlineClient::<PolkadotConfig>::from_url("wss://rococo-rpc.polkadot.io").await?;
+    let api = OnlineClient::<PolkadotConfig>::from_url(args.network_url).await?;
 
     let real = MultiAddress::<AccountId32, ()>::Id(AccountId32::from_str(&real_account)?);
 
@@ -58,14 +73,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let proxy_payload = polkadot::tx().proxy().proxy(real, None, voting_call);
     let proxy_payload = proxy_payload.unvalidated();
-
-    // let vote_payload = polkadot::tx().conviction_voting().vote(
-    //     poll_index,
-    //     Standard {
-    //         vote: polkadot::runtime_types::pallet_conviction_voting::vote::Vote(vote),
-    //         balance
-    //     }
-    // );
 
     println!("Proxied voting request: {:?}", proxy_payload.call_data());
 
