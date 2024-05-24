@@ -5,15 +5,14 @@ use std::str::FromStr;
 use clap::Parser;
 use parity_scale_codec::Decode;
 use sp_core::crypto::{Ss58AddressFormat, Ss58Codec};
-use sp_core::crypto::AccountId32 as SpAccountId32;
+use sp_core::crypto::AccountId32;
+use sp_runtime::MultiAddress;
 use subxt::{OnlineClient, PolkadotConfig};
-use subxt::utils::AccountId32 as SubxtAccountId32;
-use subxt::utils::MultiAddress;
+use subxt_core::tx::signer::Signer;
 use subxt_signer::SecretUri;
 use subxt_signer::sr25519::Keypair;
 
 use polkadot::conviction_voting::calls::types::Vote;
-use polkadot::proxy::calls::types::Proxy;
 use polkadot::proxy::events::{ProxyAdded, ProxyExecuted};
 use polkadot::runtime_types::pallet_conviction_voting::pallet::Call::vote;
 use polkadot::runtime_types::polkadot_runtime::RuntimeCall::ConvictionVoting;
@@ -45,9 +44,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("Invalid proxy secret phrase: {:?}", e))
         .and_then(|uri| Keypair::from_uri(&uri).map_err(|e| format!("Invalid proxy secret phrase: {:?}", e)))?;
 
-    let network = NetworkContext::connect(&args.network_url).await?;
+    let network = NetworkContext::connect(&args.network_url, proxy_keypair).await?;
 
-    println!("Proxy address: {}", network.address_string(&proxy_keypair.public_key().to_address::<()>()));
+    println!("Proxy address: {}", network.account_string(&network.proxy_keypair.public_key().0.into()));
 
     let stdin = io::stdin();
     let mut iterator = stdin.lock().lines();
@@ -65,7 +64,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let balance = (iterator.next().unwrap().unwrap().parse::<f64>().unwrap() * 1e12) as u128;
 
 
-    let real = MultiAddressId32::Id(SubxtAccountId32::from_str(&real_account)?);
+    let id32 = AccountId32::from_str(&real_account)?;
+    let real: MultiAddress<AccountId32, ()> = MultiAddressId32::Id(id32);
 
     let voting_call = ConvictionVoting(vote {
         poll_index,
@@ -75,14 +75,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let proxy_payload = polkadot::tx().proxy().proxy(real, None, voting_call);
+    let from1: subxt_core::utils::MultiAddress<subxt_core::utils::AccountId32, ()> = subxt_core::utils::MultiAddress::Id(subxt_core::utils::AccountId32::from_str(&real_account)?);
+    let proxy_payload = polkadot::tx().proxy().proxy(from1, None, voting_call);
     let proxy_payload = proxy_payload.unvalidated();
 
     println!("Proxied voting request: {:?}", proxy_payload.call_data());
 
     let tx_progress = network.api
         .tx()
-        .sign_and_submit_then_watch_default(&proxy_payload, &proxy_keypair)
+        .sign_and_submit_then_watch_default(&proxy_payload, &network.proxy_keypair)
         .await?;
 
     println!("Tx submitted, waiting for finalised success...");
@@ -122,7 +123,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let variant_name = extrinsic.variant_name()?;
             let sender = extrinsic
                 .address_bytes()
-                .and_then(|b| MultiAddress::<SubxtAccountId32, ()>::decode(&mut &b[..]).ok())
+                .and_then(|b| MultiAddressId32::decode(&mut &b[..]).ok())
                 .map_or("---".into(), |a| network.address_string(&a));
 
             println!("  Extrinsic: #{index} {pallet_name} {variant_name} by {:?}", sender);
@@ -134,46 +135,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let events = extrinsic.events().await?;
 
-            if pallet_name == "Proxy" && variant_name == "proxy" {
-                let proxied_call = extrinsic.as_extrinsic::<Proxy>()?.unwrap();
-                if let ConvictionVoting(vote { poll_index, vote }) = *proxied_call.call {
-                    // First check the proxied call was successful
-                    if let Ok(Some(ProxyExecuted { result: Ok(_) })) = events.find_first::<ProxyExecuted>() {
-                        println!("    proxy vote on behalf of {}: #{:} {:?}", network.address_string(&proxied_call.real), poll_index, vote)
-                    }
-
-                    // match a {
-                    //     polkadot::runtime_types::pallet_conviction_voting::pallet::Call::vote => {
-                    //     }
-                    //     _ => {
-                    //
-                    //     }
-                    // }
-                }
-            }
+            // if pallet_name == "Proxy" && variant_name == "proxy" {
+            //     let proxied_call = extrinsic.as_extrinsic::<Proxy>()?.unwrap();
+            //     if let ConvictionVoting(vote { poll_index, vote }) = *proxied_call.call {
+            //         // First check the proxied call was successful
+            //         if let Ok(Some(ProxyExecuted { result: Ok(_) })) = events.find_first::<ProxyExecuted>() {
+            //             println!("    proxy vote on behalf of {}: #{:} {:?}", network.address_string(&proxied_call.real.into()), poll_index, vote)
+            //         }
+            //     }
+            // }
 
             for event in events.iter() {
                 let event = event?;
                 match (event.pallet_name(), event.variant_name()) {
                     ("Proxy", "ProxyAdded") => {
                         let proxy_added = event.as_event::<ProxyAdded>()?.unwrap();
-                        println!("    {:?} assigned {:?} as a {:?} proxy", network.subxt_account_string(&proxy_added.delegator), network.subxt_account_string(&proxy_added.delegatee), proxy_added.proxy_type);
+                        println!("    {:?} assigned {:?} as a {:?} proxy", network.account_string(&proxy_added.delegator.0.into()), network.account_string(&proxy_added.delegatee.0.into()), proxy_added.proxy_type);
                     }
                     ("Balances", "Transfer") => {
                         let transfer = event.as_event::<polkadot::balances::events::Transfer>()?.unwrap();
-                        println!("    {:?} transferred {:?} to {:?}", network.subxt_account_string(&transfer.from), transfer.amount, network.subxt_account_string(&transfer.to));
+                        println!("    {:?} transferred {:?} to {:?}", network.account_string(&transfer.from.0.into()), transfer.amount, network.account_string(&transfer.to.0.into()));
                     }
                     ("Balances", "Deposit") => {
                         let deposit = event.as_event::<polkadot::balances::events::Deposit>()?.unwrap();
-                        println!("    {:?} deposited {:?}", network.subxt_account_string(&deposit.who), deposit.amount);
+                        println!("    {:?} deposited {:?}", network.account_string(&deposit.who.0.into()), deposit.amount);
                     }
                     ("Balances", "Withdraw") => {
                         let deposit = event.as_event::<polkadot::balances::events::Withdraw>()?.unwrap();
-                        println!("    {:?} withdrew {:?}", network.subxt_account_string(&deposit.who), deposit.amount);
+                        println!("    {:?} withdrew {:?}", network.account_string(&deposit.who.0.into()), deposit.amount);
                     }
                     ("TransactionPayment", "TransactionFeePaid") => {
                         let fee_paid = event.as_event::<polkadot::transaction_payment::events::TransactionFeePaid>()?.unwrap();
-                        println!("    {:?} paid {:?} in fees with {:?} tip", network.subxt_account_string(&fee_paid.who), fee_paid.actual_fee, fee_paid.tip);
+                        println!("    {:?} paid {:?} in fees with {:?} tip", network.account_string(&fee_paid.who.0.into()), fee_paid.actual_fee, fee_paid.tip);
                     }
                     ("Treasury", "Deposit") => {
                         let deposit = event.as_event::<polkadot::treasury::events::Deposit>()?.unwrap();
@@ -207,11 +200,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 struct NetworkContext {
     api: OnlineClient<PolkadotConfig>,
-    ss58_format: Ss58AddressFormat
+    ss58_format: Ss58AddressFormat,
+    proxy_keypair: Keypair
 }
 
 impl NetworkContext {
-    async fn connect(url: &String) -> Result<Self, String> {
+    async fn connect(url: &String, proxy_keypair: Keypair) -> Result<Self, String> {
         let api = OnlineClient::<PolkadotConfig>::from_url(url)
             .await
             .map_err(|e| format!("Unable to connect to network endpoint: {:?}", e))?;
@@ -220,23 +214,23 @@ impl NetworkContext {
             .and_then(|p| p.constant_by_name("SS58Prefix"))
             .map(|c| Ss58AddressFormat::custom(c.value()[0] as u16))
             .ok_or("Unable to determine network SS58 format")?;
-        Ok(Self { api, ss58_format })
+        Ok(Self { api, ss58_format, proxy_keypair })
     }
 
-    fn subxt_account_string(&self, account: &SubxtAccountId32) -> String {
-        self.account_string(&SpAccountId32::new(account.0))
+    fn proxy_vote(real: &AccountId32) {
+
     }
 
-    fn account_string(&self, account: &SpAccountId32) -> String {
+    fn account_string(&self, account: &AccountId32) -> String {
         account.to_ss58check_with_version(self.ss58_format)
     }
     
     fn address_string(&self, address: &MultiAddressId32) -> String {
         match address {
-            MultiAddress::Id(id32) => self.subxt_account_string(id32),
+            MultiAddress::Id(id32) => self.account_string(id32),
             _ => format!("{:?}", address)
         }
     }
 }
 
-type MultiAddressId32 = MultiAddress<SubxtAccountId32, ()>;
+type MultiAddressId32 = MultiAddress<AccountId32, ()>;
