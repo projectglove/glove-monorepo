@@ -3,12 +3,10 @@ use std::io::{BufRead, Write};
 use std::str::FromStr;
 
 use clap::Parser;
-use parity_scale_codec::{Decode, Encode};
 use sp_core::crypto::{Ss58AddressFormat, Ss58Codec};
 use sp_runtime::AccountId32;
-use sp_runtime::MultiAddress;
-use subxt::{Error, OnlineClient, PolkadotConfig};
-use subxt_core::tx::signer::Signer;
+use strum::EnumString;
+use subxt::{OnlineClient, PolkadotConfig};
 use subxt_signer::SecretUri;
 use subxt_signer::sr25519::Keypair;
 
@@ -22,20 +20,6 @@ use metadata::runtime_types::sp_runtime::DispatchError;
 
 #[subxt::subxt(runtime_metadata_path = "assets/polkadot-metadata.scale")]
 pub mod metadata {}
-
-#[derive(Parser, Debug)]
-#[command(version, about)]
-struct Args {
-    /// Secret phrase for the Glove proxy account
-    #[arg(long)]
-    proxy_secret_phrase: String,
-
-    /// URL for the network endpoint.
-    ///
-    /// See https://wiki.polkadot.network/docs/maintain-endpoints for more information.
-    #[arg(long)]
-    network_url: String
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -75,6 +59,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // pallet_conviction_voting::pallet::Error::de
 
     Ok(())
+}
+
+
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Args {
+    /// Secret phrase for the Glove proxy account
+    #[arg(long)]
+    proxy_secret_phrase: String,
+
+    /// URL for the network endpoint.
+    ///
+    /// See https://wiki.polkadot.network/docs/maintain-endpoints for more information.
+    #[arg(long)]
+    network_url: String
+}
+
+#[derive(thiserror::Error, Debug)]
+enum Error {
+    #[error("Subxt error: {0}")]
+    Subxt(#[from] subxt::Error),
+    #[error("Glove error: {0}")]
+    Glove(#[from] GloveError)
+}
+
+#[derive(thiserror::Error, Debug)]
+enum GloveError {
+    #[error("Proxy vote error: {0}")]
+    ProxyVote(#[from] ConvictionVotingError),
+    #[error("Other error: {0}")]
+    Other(String)
+}
+
+/// See https://docs.rs/pallet-conviction-voting/latest/pallet_conviction_voting/pallet/enum.Error.html
+#[derive(thiserror::Error, strum::Display, EnumString, Debug)]
+enum ConvictionVotingError {
+    NotOngoing,
+    NotVoter,
+    NoPermission,
+    NoPermissionYet,
+    AlreadyDelegating,
+    AlreadyVoting,
+    InsufficientFunds,
+    NotDelegating,
+    Nonsense,
+    MaxVotesReached,
+    ClassNeeded,
+    BadClass,
 }
 
 struct NetworkContext {
@@ -122,35 +154,24 @@ impl NetworkContext {
             return Ok(());
         };
 
-        match dispatch_error {
-            Module(module_error) => {
-                let metadata1 = self.api.metadata();
-                let conviction_voting_pallet = metadata1.pallet_by_name("ConvictionVoting");
-                if conviction_voting_pallet.map_or(false, |p| module_error.index == p.index()) {
-                    let error_variant = conviction_voting_pallet.unwrap().error_variant_by_index(module_error.error[0]);
-                    if let Some(error_variant) = error_variant {
-                        Err(Error::Other(format!("Problem with proxy vote call: {:?}", error_variant)))
-                    } else {
-                        Err(Error::Other(format!("Problem with proxy vote call: {:?}", module_error)))
-                    }
-                } else {
-                    Err(Error::Other(format!("Problem with proxy vote call: {:?}", module_error)))
-                }
-            },
-            _ => Err(Error::Other(format!("Problem with proxy vote call: {:?}", dispatch_error))),
-        }
+        let Module(module_error) = dispatch_error else {
+            return Err(GloveError::Other(format!("Problem with proxy vote: {:?}", dispatch_error)).into());
+        };
+
+        // Extract the underlying ConvictionVoting error
+        self.api
+            .metadata()
+            .pallet_by_name("ConvictionVoting")
+            .filter(|p| p.index() == module_error.index)
+            .and_then(|p| p.error_variant_by_index(module_error.error[0]))
+            .and_then(|v| ConvictionVotingError::try_from(v.name.as_str()).ok())
+            .map_or_else(
+                || Err(GloveError::Other(format!("Problem with proxy vote: {:?}", module_error)).into()),
+                |e| Err(GloveError::ProxyVote(e).into())
+            )
     }
 
     fn account_string(&self, account: &AccountId32) -> String {
         account.to_ss58check_with_version(self.ss58_format)
     }
-    
-    fn address_string(&self, address: &MultiAddressId32) -> String {
-        match address {
-            MultiAddress::Id(id32) => self.account_string(id32),
-            _ => format!("{:?}", address)
-        }
-    }
 }
-
-type MultiAddressId32 = MultiAddress<AccountId32, ()>;
