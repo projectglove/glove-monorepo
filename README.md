@@ -34,3 +34,7 @@ subxt metadata --url="wss://rpc.polkadot.io:443" -f bytes > assets/polkadot-meta
 * Persist voting requests
 * Restoring state on startup from private store and on-chain
 * When does the mixing occur? Is it configurable?
+* Remove vote
+* Split votes
+* Abstain votes?
+* 

@@ -3,24 +3,25 @@ use std::io::{BufRead, Write};
 use std::str::FromStr;
 
 use clap::Parser;
-use parity_scale_codec::Decode;
+use parity_scale_codec::{Decode, Encode};
 use sp_core::crypto::{Ss58AddressFormat, Ss58Codec};
-use sp_core::crypto::AccountId32;
+use sp_runtime::AccountId32;
 use sp_runtime::MultiAddress;
-use subxt::{OnlineClient, PolkadotConfig};
+use subxt::{Error, OnlineClient, PolkadotConfig};
 use subxt_core::tx::signer::Signer;
 use subxt_signer::SecretUri;
 use subxt_signer::sr25519::Keypair;
 
-use polkadot::conviction_voting::calls::types::Vote;
-use polkadot::proxy::events::{ProxyAdded, ProxyExecuted};
-use polkadot::runtime_types::pallet_conviction_voting::pallet::Call::vote;
-use polkadot::runtime_types::polkadot_runtime::RuntimeCall::ConvictionVoting;
-
-use crate::polkadot::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard;
+use DispatchError::Module;
+use metadata::proxy::events::ProxyExecuted;
+use metadata::runtime_types::pallet_conviction_voting::pallet::Call::vote;
+use metadata::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard;
+use metadata::runtime_types::pallet_conviction_voting::vote::Vote;
+use metadata::runtime_types::polkadot_runtime::RuntimeCall::ConvictionVoting;
+use metadata::runtime_types::sp_runtime::DispatchError;
 
 #[subxt::subxt(runtime_metadata_path = "assets/polkadot-metadata.scale")]
-pub mod polkadot {}
+pub mod metadata {}
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -63,137 +64,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     io::stdout().flush().unwrap();
     let balance = (iterator.next().unwrap().unwrap().parse::<f64>().unwrap() * 1e12) as u128;
 
+    let real_account = AccountId32::from_str(&real_account)?;
+    network.proxy_vote(real_account, poll_index, vote, balance).await?;
 
-    let id32 = AccountId32::from_str(&real_account)?;
-    let real: MultiAddress<AccountId32, ()> = MultiAddressId32::Id(id32);
+    //
+    // metadata::runtime_types::pallet_conviction_voting::pallet::Error::AlreadyDelegating;
+    //
+    // metadata::runtime_types::pallet_conviction_voting::pallet::Error::
 
-    let voting_call = ConvictionVoting(vote {
-        poll_index,
-        vote: Standard {
-            vote: polkadot::runtime_types::pallet_conviction_voting::vote::Vote(vote),
-            balance,
-        }
-    });
-
-    let from1: subxt_core::utils::MultiAddress<subxt_core::utils::AccountId32, ()> = subxt_core::utils::MultiAddress::Id(subxt_core::utils::AccountId32::from_str(&real_account)?);
-    let proxy_payload = polkadot::tx().proxy().proxy(from1, None, voting_call);
-    let proxy_payload = proxy_payload.unvalidated();
-
-    println!("Proxied voting request: {:?}", proxy_payload.call_data());
-
-    let tx_progress = network.api
-        .tx()
-        .sign_and_submit_then_watch_default(&proxy_payload, &network.proxy_keypair)
-        .await?;
-
-    println!("Tx submitted, waiting for finalised success...");
-
-    tx_progress
-        .wait_for_finalized_success()
-        .await?
-        .find_first::<ProxyExecuted>()?
-        .unwrap()
-        .result
-        .map_err(|e| {
-            // if let DispatchError::Module(module_error) = e {
-            //     // TODO Figure out the underlying convition_voting error
-            //     format!("{:?}", e)
-            // } else {
-            //     format!("{:?}", e)
-            // }
-            format!("{:?}", e)
-        })?;
-
-    println!("Voting successful");
-
-    let mut blocks_sub = network.api.blocks().subscribe_finalized().await?;
-
-    while let Some(block) = blocks_sub.next().await {
-        let block = block?;
-        let block_number = block.header().number;
-        let extrinsics = block.extrinsics().await?;
-
-        println!("New block #{block_number} created! ✨");
-
-        for extrinsic in extrinsics.iter() {
-            let extrinsic = extrinsic?;
-
-            let index = extrinsic.index();
-            let pallet_name = extrinsic.pallet_name()?;
-            let variant_name = extrinsic.variant_name()?;
-            let sender = extrinsic
-                .address_bytes()
-                .and_then(|b| MultiAddressId32::decode(&mut &b[..]).ok())
-                .map_or("---".into(), |a| network.address_string(&a));
-
-            println!("  Extrinsic: #{index} {pallet_name} {variant_name} by {:?}", sender);
-
-            if pallet_name == "ConvictionVoting" && variant_name == "vote" {
-                let vote_call = extrinsic.as_extrinsic::<Vote>()?.unwrap();
-                println!("    vote on #{} {:?}", vote_call.poll_index, vote_call.vote)
-            }
-
-            let events = extrinsic.events().await?;
-
-            // if pallet_name == "Proxy" && variant_name == "proxy" {
-            //     let proxied_call = extrinsic.as_extrinsic::<Proxy>()?.unwrap();
-            //     if let ConvictionVoting(vote { poll_index, vote }) = *proxied_call.call {
-            //         // First check the proxied call was successful
-            //         if let Ok(Some(ProxyExecuted { result: Ok(_) })) = events.find_first::<ProxyExecuted>() {
-            //             println!("    proxy vote on behalf of {}: #{:} {:?}", network.address_string(&proxied_call.real.into()), poll_index, vote)
-            //         }
-            //     }
-            // }
-
-            for event in events.iter() {
-                let event = event?;
-                match (event.pallet_name(), event.variant_name()) {
-                    ("Proxy", "ProxyAdded") => {
-                        let proxy_added = event.as_event::<ProxyAdded>()?.unwrap();
-                        println!("    {:?} assigned {:?} as a {:?} proxy", network.account_string(&proxy_added.delegator.0.into()), network.account_string(&proxy_added.delegatee.0.into()), proxy_added.proxy_type);
-                    }
-                    ("Balances", "Transfer") => {
-                        let transfer = event.as_event::<polkadot::balances::events::Transfer>()?.unwrap();
-                        println!("    {:?} transferred {:?} to {:?}", network.account_string(&transfer.from.0.into()), transfer.amount, network.account_string(&transfer.to.0.into()));
-                    }
-                    ("Balances", "Deposit") => {
-                        let deposit = event.as_event::<polkadot::balances::events::Deposit>()?.unwrap();
-                        println!("    {:?} deposited {:?}", network.account_string(&deposit.who.0.into()), deposit.amount);
-                    }
-                    ("Balances", "Withdraw") => {
-                        let deposit = event.as_event::<polkadot::balances::events::Withdraw>()?.unwrap();
-                        println!("    {:?} withdrew {:?}", network.account_string(&deposit.who.0.into()), deposit.amount);
-                    }
-                    ("TransactionPayment", "TransactionFeePaid") => {
-                        let fee_paid = event.as_event::<polkadot::transaction_payment::events::TransactionFeePaid>()?.unwrap();
-                        println!("    {:?} paid {:?} in fees with {:?} tip", network.account_string(&fee_paid.who.0.into()), fee_paid.actual_fee, fee_paid.tip);
-                    }
-                    ("Treasury", "Deposit") => {
-                        let deposit = event.as_event::<polkadot::treasury::events::Deposit>()?.unwrap();
-                        println!("    {:?} deposited into Treasury", deposit.value);
-                    }
-                    // ("ConvictionVoting", "Delegated") => {
-                    //     let delegated = event.as_event::<polkadot::conviction_voting::events::Delegated>()?.unwrap();
-                    //     println!("    {:?} deposited into Treasury", delegated.);
-                    // }
-                    ("System", "ExtrinsicSuccess") => {
-                        let es = event.as_event::<polkadot::system::events::ExtrinsicSuccess>()?.unwrap();
-                        println!("    ExtrinsicSuccess {:?}", es.dispatch_info);
-                    }
-                    ("System", "ExtrinsicFailed") => {
-                        let ef = event.as_event::<polkadot::system::events::ExtrinsicFailed>()?.unwrap();
-                        println!("    ExtrinsicFailed {:?} {:?}", ef.dispatch_info, ef.dispatch_error);
-                    }
-                    // ("ParaInclusion", _) => {}
-                    _ => {
-                        // println!("    {} {}", event.pallet_name(), event.variant_name())
-                    }
-                }
-            }
-        }
-
-        println!()
-    }
+    // pallet_conviction_voting::pallet::Error::de
 
     Ok(())
 }
@@ -201,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 struct NetworkContext {
     api: OnlineClient<PolkadotConfig>,
     ss58_format: Ss58AddressFormat,
-    proxy_keypair: Keypair
+    proxy_keypair: Keypair,
 }
 
 impl NetworkContext {
@@ -217,8 +96,49 @@ impl NetworkContext {
         Ok(Self { api, ss58_format, proxy_keypair })
     }
 
-    fn proxy_vote(real: &AccountId32) {
+    async fn proxy_vote(&self, real_account: AccountId32, poll_index: u32, vote: u8, balance: u128) -> Result<(), Error> {
+        let voting_call = ConvictionVoting(vote {
+            poll_index,
+            vote: Standard {
+                vote: Vote(vote),
+                balance,
+            }
+        });
 
+        let real_account = subxt_core::utils::AccountId32::from(Into::<[u8; 32]>::into(real_account));
+        let proxy_payload = metadata::tx()
+            .proxy()
+            .proxy(subxt_core::utils::MultiAddress::Id(real_account), None, voting_call)
+            .unvalidated();  // Necessary
+
+        let proxy_executed = self.api.tx()
+            .sign_and_submit_then_watch_default(&proxy_payload, &self.proxy_keypair).await?
+            .wait_for_finalized_success().await?
+            .find_first::<ProxyExecuted>()?;
+
+        let Some(ProxyExecuted { result: Err(dispatch_error) }) = proxy_executed else {
+            // This also treats the absence of the ProxyExecuted event as a success, which is similar
+            // to what TxInBlock::wait_for_success does
+            return Ok(());
+        };
+
+        match dispatch_error {
+            Module(module_error) => {
+                let metadata1 = self.api.metadata();
+                let conviction_voting_pallet = metadata1.pallet_by_name("ConvictionVoting");
+                if conviction_voting_pallet.map_or(false, |p| module_error.index == p.index()) {
+                    let error_variant = conviction_voting_pallet.unwrap().error_variant_by_index(module_error.error[0]);
+                    if let Some(error_variant) = error_variant {
+                        Err(Error::Other(format!("Problem with proxy vote call: {:?}", error_variant)))
+                    } else {
+                        Err(Error::Other(format!("Problem with proxy vote call: {:?}", module_error)))
+                    }
+                } else {
+                    Err(Error::Other(format!("Problem with proxy vote call: {:?}", module_error)))
+                }
+            },
+            _ => Err(Error::Other(format!("Problem with proxy vote call: {:?}", dispatch_error))),
+        }
     }
 
     fn account_string(&self, account: &AccountId32) -> String {
