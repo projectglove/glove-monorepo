@@ -34,7 +34,8 @@ subxt metadata --url="wss://rpc.polkadot.io:443" -f bytes > assets/polkadot-meta
 * Persist voting requests
 * Restoring state on startup from private store and on-chain
 * When does the mixing occur? Is it configurable?
-* Remove vote
+* Remove vote request from client
+* Remove on-chain votes due to error conditions detected by the proxy
 * Split votes
 * Abstain votes?
 * 

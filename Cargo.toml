@@ -5,6 +5,7 @@ description = "Glove proxy service"
 edition = "2021"
 
 [dependencies]
+bigdecimal = "0.4.3"
 clap = { version = "4.5.4", features = ["derive"] }
 futures = "0.3.30"
 parity-scale-codec = "3.6.12"

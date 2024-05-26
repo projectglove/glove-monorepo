@@ -1,3 +1,5 @@
+mod mixing;
+
 use std::io;
 use std::io::{BufRead, Write};
 use std::str::FromStr;
@@ -29,9 +31,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("Invalid proxy secret phrase: {:?}", e))
         .and_then(|uri| Keypair::from_uri(&uri).map_err(|e| format!("Invalid proxy secret phrase: {:?}", e)))?;
 
-    let network = NetworkContext::connect(&args.network_url, proxy_keypair).await?;
+    let glove_proxy = GloveProxy::connect(&args.network_url, proxy_keypair).await?;
 
-    println!("Proxy address: {}", network.account_string(&network.proxy_keypair.public_key().0.into()));
+    println!("Proxy address: {}", glove_proxy.account_string(&glove_proxy.keypair.public_key().0.into()));
 
     let stdin = io::stdin();
     let mut iterator = stdin.lock().lines();
@@ -49,14 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let balance = (iterator.next().unwrap().unwrap().parse::<f64>().unwrap() * 1e12) as u128;
 
     let real_account = AccountId32::from_str(&real_account)?;
-    network.proxy_vote(real_account, poll_index, vote, balance).await?;
-
-    //
-    // metadata::runtime_types::pallet_conviction_voting::pallet::Error::AlreadyDelegating;
-    //
-    // metadata::runtime_types::pallet_conviction_voting::pallet::Error::
-
-    // pallet_conviction_voting::pallet::Error::de
+    glove_proxy.proxy_vote(real_account, poll_index, vote, balance).await?;
 
     Ok(())
 }
@@ -109,14 +104,14 @@ enum ConvictionVotingError {
     BadClass,
 }
 
-struct NetworkContext {
+struct GloveProxy {
     api: OnlineClient<PolkadotConfig>,
     ss58_format: Ss58AddressFormat,
-    proxy_keypair: Keypair,
+    keypair: Keypair,
 }
 
-impl NetworkContext {
-    async fn connect(url: &String, proxy_keypair: Keypair) -> Result<Self, String> {
+impl GloveProxy {
+    async fn connect(url: &String, keypair: Keypair) -> Result<Self, String> {
         let api = OnlineClient::<PolkadotConfig>::from_url(url)
             .await
             .map_err(|e| format!("Unable to connect to network endpoint: {:?}", e))?;
@@ -125,7 +120,7 @@ impl NetworkContext {
             .and_then(|p| p.constant_by_name("SS58Prefix"))
             .map(|c| Ss58AddressFormat::custom(c.value()[0] as u16))
             .ok_or("Unable to determine network SS58 format")?;
-        Ok(Self { api, ss58_format, proxy_keypair })
+        Ok(Self { api, ss58_format, keypair })
     }
 
     async fn proxy_vote(&self, real_account: AccountId32, poll_index: u32, vote: u8, balance: u128) -> Result<(), Error> {
@@ -144,7 +139,7 @@ impl NetworkContext {
             .unvalidated();  // Necessary
 
         let proxy_executed = self.api.tx()
-            .sign_and_submit_then_watch_default(&proxy_payload, &self.proxy_keypair).await?
+            .sign_and_submit_then_watch_default(&proxy_payload, &self.keypair).await?
             .wait_for_finalized_success().await?
             .find_first::<ProxyExecuted>()?;
 
