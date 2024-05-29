@@ -1653,6 +1653,7 @@ dependencies = [
  "clap",
  "futures",
  "parity-scale-codec",
+ "rand",
  "sp-core 33.0.1",
  "sp-runtime 37.0.0",
  "strum",

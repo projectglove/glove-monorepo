@@ -1,4 +1,7 @@
+use std::str::FromStr;
+
 use bigdecimal::{BigDecimal, ToPrimitive};
+use rand::{RngCore, thread_rng};
 
 #[derive(Debug)]
 struct VoteMixRequest {
@@ -26,13 +29,26 @@ fn mix_votes(requests: &Vec<VoteMixRequest>) -> Option<VoteMixingResult> {
         return None;
     }
 
-    let total_balance = BigDecimal::from(ayes_balance + nays_balance);
+    let mut rng = thread_rng();
 
-    let mut net_balances: Vec<u128> = requests
+    let randomized_balances: Vec<BigDecimal> = requests
         .iter()
-        .map(|r| {
-            let proportion = BigDecimal::from(r.balance) / total_balance.clone();
-            (BigDecimal::from(net_balance) * proportion).to_u128().unwrap()
+        .map(|request| {
+            let random_multiplier = 1f64 + (rng.next_u32() as f64 / u32::MAX as f64);
+            BigDecimal::from_str(random_multiplier.to_string().as_str()).unwrap() * request.balance
+        })
+        .collect();
+
+    let total_randomized_balance = randomized_balances.iter().sum::<BigDecimal>();
+
+    let mut net_balances: Vec<u128> = randomized_balances
+        .iter()
+        .enumerate()
+        .map(|(index, randomized_balance)| {
+            let weight = randomized_balance / &total_randomized_balance;
+            // It's possible the weights based on the randomized balances will lead a value greater
+            // than the request balance.
+            (net_balance * weight).to_u128().unwrap().min(requests[index].balance)
         })
         .collect();
 
@@ -40,8 +56,8 @@ fn mix_votes(requests: &Vec<VoteMixRequest>) -> Option<VoteMixingResult> {
 
     let mut index: usize = 0;
     while leftover_balance > 0 {
-        let balance_allowance = requests[index].balance - net_balances[index];
-        if balance_allowance > 0 {
+        if requests[index].balance > net_balances[index] {
+            let balance_allowance = requests[index].balance - net_balances[index];
             let assign_extra_balance = leftover_balance.min(balance_allowance);
             net_balances[index] += assign_extra_balance;
             leftover_balance -= assign_extra_balance;
