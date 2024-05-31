@@ -5,6 +5,7 @@ description = "Glove proxy service"
 edition = "2021"
 
 [dependencies]
+anyhow = "1.0.86"
 bigdecimal = "0.4.3"
 clap = { version = "4.5.4", features = ["derive"] }
 futures = "0.3.30"
@@ -13,8 +14,8 @@ rand = { version = "0.8.5", features = [] }
 sp-core = "33.0.1"
 sp-runtime = "37.0.0"
 strum = { version = "0.26.2", features = ["derive"] }
-subxt = "0.36.0"
-subxt-core = { version = "0.36.0", features = ["substrate-compat"] }
-subxt-signer = { version = "0.36.0", features = ["subxt"] }
+subxt = "0.37.0"
+subxt-core = { version = "0.37.0", features = ["substrate-compat"] }
+subxt-signer = { version = "0.37.0", features = ["subxt"] }
 thiserror = "1.0.61"
 tokio = { version = "1.37.0", features = ["rt", "rt-multi-thread", "macros"] }

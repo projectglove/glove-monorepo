@@ -4,27 +4,27 @@ use bigdecimal::{BigDecimal, ToPrimitive};
 use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
 
-#[derive(Debug)]
-struct VoteMixRequest {
+#[derive(Copy, Clone, Debug)]
+pub struct VoteMixRequest {
     aye: bool,
     balance: u128
 }
 
 impl VoteMixRequest {
-    fn new(aye: bool, balance: u128) -> Self {
+    pub fn new(aye: bool, balance: u128) -> Self {
         Self { aye, balance }
     }
 }
 
 #[derive(Debug, PartialEq)]
-struct VoteMixingResult {
-    aye: bool,
+pub struct VoteMixingResult {
+    pub aye: bool,
     /// The randomized mixed balance for the request at the same index. Note, it's possible for the
     /// value to be zero.
-    balances: Vec<u128>
+    pub balances: Vec<u128>
 }
 
-fn mix_votes(requests: &Vec<VoteMixRequest>) -> Option<VoteMixingResult> {
+pub fn mix_votes(requests: &Vec<VoteMixRequest>) -> Option<VoteMixingResult> {
     let ayes_balance = requests.iter().filter(|r| r.aye).map(|r| r.balance).sum::<u128>();
     let nays_balance = requests.iter().filter(|r| !r.aye).map(|r| r.balance).sum::<u128>();
     let net_balance = ayes_balance.abs_diff(nays_balance);
