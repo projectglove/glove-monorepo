@@ -1,7 +1,8 @@
 use std::str::FromStr;
 
 use bigdecimal::{BigDecimal, ToPrimitive};
-use rand::{RngCore, thread_rng};
+use rand::distributions::{Distribution, Uniform};
+use rand::thread_rng;
 
 #[derive(Debug)]
 struct VoteMixRequest {
@@ -18,6 +19,8 @@ impl VoteMixRequest {
 #[derive(Debug, PartialEq)]
 struct VoteMixingResult {
     aye: bool,
+    /// The randomized mixed balance for the request at the same index. Note, it's possible for the
+    /// value to be zero.
     balances: Vec<u128>
 }
 
@@ -31,11 +34,14 @@ fn mix_votes(requests: &Vec<VoteMixRequest>) -> Option<VoteMixingResult> {
 
     let mut rng = thread_rng();
 
+    // Generate a random multiplier between 1x and 2x.
+    let multipler_range = Uniform::from(1.0..2.0);
     let randomized_balances: Vec<BigDecimal> = requests
         .iter()
         .map(|request| {
-            let random_multiplier = 1f64 + (rng.next_u32() as f64 / u32::MAX as f64);
-            BigDecimal::from_str(random_multiplier.to_string().as_str()).unwrap() * request.balance
+            let random_multiplier = multipler_range.sample(&mut rng);
+            let random_multiplier = BigDecimal::from_str(random_multiplier.to_string().as_str()).unwrap();
+            random_multiplier * request.balance
         })
         .collect();
 
@@ -46,8 +52,9 @@ fn mix_votes(requests: &Vec<VoteMixRequest>) -> Option<VoteMixingResult> {
         .enumerate()
         .map(|(index, randomized_balance)| {
             let weight = randomized_balance / &total_randomized_balance;
-            // It's possible the weights based on the randomized balances will lead a value greater
-            // than the request balance.
+            // It's possible the randomized weights will lead to a value greater than the request
+            // balance. This is more likely to happen if there are fewer requests and the random
+            // multiplier is sufficiently relatively bigger than the others.
             (net_balance * weight).to_u128().unwrap().min(requests[index].balance)
         })
         .collect();
@@ -133,6 +140,7 @@ mod tests {
         for (index, mixed_balance) in result.balances.iter().enumerate() {
             assert!(*mixed_balance <= requests[index].balance);
         }
+        println!("{:?}", result)
     }
 
     #[test]

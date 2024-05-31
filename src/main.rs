@@ -112,8 +112,7 @@ struct GloveProxy {
 
 impl GloveProxy {
     async fn connect(url: &String, keypair: Keypair) -> Result<Self, String> {
-        let api = OnlineClient::<PolkadotConfig>::from_url(url)
-            .await
+        let api = OnlineClient::<PolkadotConfig>::from_url(url).await
             .map_err(|e| format!("Unable to connect to network endpoint: {:?}", e))?;
         let ss58_format = api.metadata()
             .pallet_by_name("System")
