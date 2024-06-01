@@ -1,7 +1,7 @@
 [package]
 name = "glove"
 version = "0.1.0"
-description = "Glove proxy service"
+description = "Project Glove"
 edition = "2021"
 
 [dependencies]

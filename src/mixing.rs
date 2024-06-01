@@ -75,6 +75,7 @@ pub fn mix_votes(requests: &Vec<VoteMixRequest>) -> Option<VoteMixingResult> {
     Some(VoteMixingResult { aye: ayes_balance > nays_balance, balances: net_balances })
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
 
