@@ -3,10 +3,12 @@ use std::io::{BufRead, Write};
 use std::str::FromStr;
 
 use anyhow::{anyhow, bail, Context, Result};
+use bigdecimal::num_traits::Pow;
 use clap::Parser;
 use futures::future::join_all;
 use sp_core::crypto::{Ss58AddressFormat, Ss58Codec};
 use sp_runtime::AccountId32;
+use ss58_registry::{Ss58AddressFormatRegistry, Token};
 use strum::EnumString;
 use subxt::{OnlineClient, PolkadotConfig};
 use subxt_signer::SecretUri;
@@ -48,7 +50,7 @@ async fn main() -> Result<()> {
         if line == "mix" {
             break;
         } else {
-            let Some(request) = parse_vote_request(line.as_str()) else {
+            let Some(request) = parse_vote_request(line.as_str(), glove_proxy.token_decimals) else {
                 println!("Invalid, try again");
                 continue;
             };
@@ -57,7 +59,8 @@ async fn main() -> Result<()> {
     }
 
     let Some(mixing_result) = mixing::mix_votes(&requests.iter().map(|r| r.1).collect()) else {
-        bail!("Net vote result is cancelled out");
+        // TODO Vote abstain with a minimum balance.
+        bail!("Voting requests cancel each other out");
     };
 
     println!("Net mixing result: {:?}", mixing_result);
@@ -88,8 +91,8 @@ async fn main() -> Result<()> {
 const AYE: u8 = 128;
 const NAY: u8 = 0;
 
-fn parse_vote_request(string: &str) -> Option<(AccountId32, VoteMixRequest)> {
-    let parts: Vec<&str> = string.split(' ').collect();
+fn parse_vote_request(str: &str, decimals: u8) -> Option<(AccountId32, VoteMixRequest)> {
+    let parts = str.split(' ').collect::<Vec<_>>();
     if parts.len() != 3 {
         return None;
     }
@@ -103,7 +106,7 @@ fn parse_vote_request(string: &str) -> Option<(AccountId32, VoteMixRequest)> {
         "n" => false,
         _ => return None
     };
-    let Ok(balance) = parts[2].parse::<f64>().map(|b| (b * 1e12) as u128) else {
+    let Ok(balance) = parts[2].parse::<f64>().map(|b| (b * 10f64.pow(decimals)) as u128) else {
         return None;
     };
     Some((real_account, VoteMixRequest::new(aye, balance)))
@@ -150,6 +153,7 @@ enum ConvictionVotingError {
 struct GloveProxy {
     api: OnlineClient<PolkadotConfig>,
     ss58_format: Ss58AddressFormat,
+    token_decimals: u8,
     keypair: Keypair,
 }
 
@@ -157,12 +161,16 @@ impl GloveProxy {
     async fn connect(url: &String, keypair: Keypair) -> Result<Self> {
         let api = OnlineClient::<PolkadotConfig>::from_url(url).await
             .with_context(|| "Unable to connect to network endpoint:")?;
-        let ss58_format = api.metadata()
-            .pallet_by_name("System")
-            .and_then(|pallet| pallet.constant_by_name("SS58Prefix"))
-            .map(|constant| Ss58AddressFormat::custom(constant.value()[0] as u16))
-            .ok_or(anyhow!("Unable to determine network SS58 format"))?;
-        Ok(Self { api, ss58_format, keypair })
+        let ss58_address_format = api.constants()
+            .at(&metadata::constants().system().ss58_prefix())
+            .map(Ss58AddressFormat::custom)?;
+        let ss58 = Ss58AddressFormatRegistry::try_from(ss58_address_format)
+            .with_context(|| "Unable to determine network SS58 format")?;
+        let token_decimals = ss58.tokens()
+            .first()
+            .map(|token_registry| Token::from(*token_registry).decimals)
+            .unwrap_or(12);
+        Ok(Self { api, ss58_format: ss58.into(), token_decimals, keypair })
     }
 
     async fn proxy_vote(&self, real_account: AccountId32, poll_index: u32, vote: u8, balance: u128) -> Result<()> {
@@ -191,11 +199,12 @@ impl GloveProxy {
             return Ok(());
         };
 
+        // Extract the underlying ConvictionVoting error
+
         let Module(module_error) = dispatch_error else {
             bail!("Problem with proxy vote: {:?}", dispatch_error);
         };
 
-        // Extract the underlying ConvictionVoting error
         self.api
             .metadata()
             .pallet_by_name("ConvictionVoting")

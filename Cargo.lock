@@ -1657,6 +1657,7 @@ dependencies = [
  "rand",
  "sp-core 33.0.1",
  "sp-runtime 37.0.0",
+ "ss58-registry",
  "strum",
  "subxt",
  "subxt-core",
