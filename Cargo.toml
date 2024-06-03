@@ -6,6 +6,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.86"
+axum = "0.7.5"
 bigdecimal = "0.4.3"
 clap = { version = "4.5.4", features = ["derive"] }
 futures = "0.3.30"
@@ -20,3 +21,5 @@ subxt-core = { version = "0.37.0", features = ["substrate-compat"] }
 subxt-signer = { version = "0.37.0", features = ["subxt"] }
 thiserror = "1.0.61"
 tokio = { version = "1.37.0", features = ["rt", "rt-multi-thread", "macros"] }
+serde = { version = "1.0.203", features = ["derive"] }
+axum-macros = "0.4.1"

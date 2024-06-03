@@ -1,6 +1,8 @@
 use std::str::FromStr;
 
 use anyhow::{Context, Result};
+use rand::random;
+use serde::Deserialize;
 use sp_core::crypto::{AccountId32, Ss58Codec};
 use ss58_registry::{Ss58AddressFormat, Ss58AddressFormatRegistry, Token};
 use subxt::blocks::ExtrinsicEvents;
@@ -37,7 +39,9 @@ impl SubstrateNetwork {
             .first()
             .map(|token_registry| Token::from(*token_registry).decimals)
             .unwrap_or(12);
-        Ok(Self { api, ss58_format: ss58.into(), token_decimals, keypair })
+        let network = Self { api, ss58_format: ss58.into(), token_decimals, keypair };
+        println!("Address: {}", network.account_string(&network.keypair.public_key().0.into()));
+        Ok(network)
     }
 
     pub async fn call_extrinsic<Call: Payload>(
@@ -54,4 +58,24 @@ impl SubstrateNetwork {
     pub fn account_string(&self, account: &AccountId32) -> String {
         account.to_ss58check_with_version(self.ss58_format)
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoteRequest {
+    pub account: AccountId32,
+    pub nonce: u128,
+    pub poll_index: u32,
+    pub aye: bool,
+    pub balance: u128
+}
+
+impl VoteRequest {
+    pub fn new(account: AccountId32, poll_index: u32, aye: bool, balance: u128) -> Self {
+        Self { account, nonce: random(), poll_index, aye, balance }
+    }
+}
+
+pub struct RemoveVote {
+    pub account: AccountId32,
+    pub poll_index: u32
 }

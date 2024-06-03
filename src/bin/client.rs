@@ -2,14 +2,14 @@ use anyhow::Result;
 use clap::Parser;
 use subxt_signer::sr25519::Keypair;
 
-use glove::SubstrateNetwork;
+use core::SubstrateNetwork;
+
+mod core;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
     let network = SubstrateNetwork::connect(&args.network_url, args.secret_phrase).await?;
-
-    println!("Client address: {}", network.account_string(&network.keypair.public_key().0.into()));
 
     Ok(())
 }
