@@ -15,7 +15,6 @@ rand = { version = "0.8.5", features = [] }
 sp-core = "33.0.1"
 sp-runtime = "37.0.0"
 ss58-registry = "1.47.0"
-strum = { version = "0.26.2", features = ["derive"] }
 subxt = "0.37.0"
 subxt-core = { version = "0.37.0", features = ["substrate-compat"] }
 subxt-signer = { version = "0.37.0", features = ["subxt"] }
