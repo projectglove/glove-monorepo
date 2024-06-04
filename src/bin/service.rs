@@ -22,11 +22,11 @@ use core::metadata::runtime_types::pallet_conviction_voting::vote::Vote;
 use core::metadata::runtime_types::polkadot_runtime::RuntimeCall::ConvictionVoting;
 use core::metadata::runtime_types::sp_runtime::DispatchError;
 use DispatchError::Module;
-use GloveError::{ModuleCall, VoteCall};
 use mixing::VoteMixRequest;
 
 use crate::core::metadata::runtime_types::polkadot_runtime::RuntimeCall;
 use crate::core::metadata::runtime_types::sp_runtime::ModuleError;
+use crate::core::RemoveVoteRequest;
 
 mod mixing;
 mod core;
@@ -56,22 +56,28 @@ async fn main() -> anyhow::Result<()> {
 
     let network = SubstrateNetwork::connect(&args.network_url, args.proxy_secret_phrase).await?;
 
-    let glove_state = Arc::new(GloveState {
+    let glove_context = Arc::new(GloveContext {
         network,
-        polls: Mutex::new(HashMap::new())
+        state: GloveState::default()
     });
 
     let router = Router::new()
         .route("/vote", post(vote))
-        .with_state(glove_state);
+        .route("/remove-vote", post(remove_vote))
+        .with_state(glove_context);
     let listener = TcpListener::bind("localhost:8080").await?;
     axum::serve(listener, router).await?;
 
     Ok(())
 }
 
-struct GloveState {
+struct GloveContext {
     network: SubstrateNetwork,
+    state: GloveState
+}
+
+#[derive(Default)]
+struct GloveState {
     polls: Mutex<HashMap<u32, HashMap<AccountId32, VoteRequest>>>
 }
 
@@ -81,33 +87,48 @@ impl GloveState {
         let poll_index = vote_request.poll_index;
         let poll_requests = polls.entry(poll_index).or_default();
         poll_requests.insert(vote_request.account.clone(), vote_request);
+        Self::map_to_vec(poll_index, poll_requests)
+    }
+
+    async fn remove_vote_request(&self, poll_index: u32, account: AccountId32) -> Option<Vec<VoteRequest>> {
+        let mut polls = self.polls.lock().await;
+        let poll_requests = polls.get_mut(&poll_index)?;
+        poll_requests.remove(&account)?;
+        // TODO Fix "cannot borrow `polls` as mutable more than once at a time"
+        // if poll_requests.is_empty() {
+        //     polls.remove(&poll_index);
+        // }
+        Some(Self::map_to_vec(poll_index, poll_requests))
+    }
+
+    fn map_to_vec(poll_index: u32, poll_requests: &HashMap<AccountId32, VoteRequest>) -> Vec<VoteRequest> {
         println!("Requests for poll {}", poll_index);
         poll_requests.values().for_each(|r| println!("{:?}", r));
         println!();
         poll_requests.clone().into_values().sorted_by(|a, b| Ord::cmp(&a.account, &b.account)).collect()
-    }
-
-    async fn remove_vote_request(&self, poll_index: u32, account: AccountId32) -> Option<VoteRequest> {
-        let mut polls = self.polls.lock().await;
-        let poll_requests = polls.get_mut(&poll_index)?;
-        let removed = poll_requests.remove(&account);
-        if poll_requests.is_empty() {
-            polls.remove(&poll_index);
-        }
-        removed
     }
 }
 
 // TODO Reject for polls which are known to have closed
 // TODO Reject for accounts which are not proxied to the GloveProxy
 // TODO Reject for zero balance
-// #[debug_handler]
-async fn vote(state: State<Arc<GloveState>>, Json(payload): Json<VoteRequest>) -> GloveResult {
+async fn vote(context: State<Arc<GloveContext>>, Json(payload): Json<VoteRequest>) -> GloveResult {
     let poll_index = payload.poll_index;
-    let poll_requests = state.add_vote_request(payload).await;
+    let poll_requests = context.state.add_vote_request(payload).await;
     // TODO Do mixing and submitting on-chain at correct time(s), rather than each time a request is
     //  submitted
-    mix_votes_and_submit_on_chain(&state.network, poll_index, poll_requests).await?;
+    mix_votes_and_submit_on_chain(&context.network, poll_index, poll_requests).await?;
+    Ok(())
+}
+
+async fn remove_vote(context: State<Arc<GloveContext>>, Json(payload): Json<RemoveVoteRequest>) -> GloveResult {
+    let poll_requests = context.state
+        .remove_vote_request(payload.poll_index, payload.account).await
+        .ok_or(GloveError::PollNotVotedFor)?;
+    // TODO Only do the mixing if the votes were previously submitted on-chain
+    // TODO However, this will presumably not remove the original vote for this account from on-chain
+    //  and so it's likely we need to make a remove-vote call in the same batch
+    mix_votes_and_submit_on_chain(&context.network, payload.poll_index, poll_requests).await?;
     Ok(())
 }
 
@@ -154,7 +175,7 @@ async fn proxy_vote(
     });
 
     let module_error = match proxy_call(network, account, voting_call).await {
-        Err(ModuleCall(module_error)) => module_error,
+        Err(GloveError::ModuleCall(module_error)) => module_error,
         Err(error) => return Err(error),
         Ok(_) => return Ok(())
     };
@@ -167,22 +188,22 @@ async fn proxy_vote(
         .and_then(|p| p.error_variant_by_index(module_error.error[0]))
         .and_then(|v| {
             match v.name.as_str() {
-                "NotOngoing"        => Some(VoteCall(ConvictionVotingError::NotOngoing)),
-                "NotVoter"          => Some(VoteCall(ConvictionVotingError::NotVoter)),
-                "NoPermission"      => Some(VoteCall(ConvictionVotingError::NoPermission)),
-                "NoPermissionYet"   => Some(VoteCall(ConvictionVotingError::NoPermissionYet)),
-                "AlreadyDelegating" => Some(VoteCall(ConvictionVotingError::AlreadyDelegating)),
-                "AlreadyVoting"     => Some(VoteCall(ConvictionVotingError::AlreadyVoting)),
-                "InsufficientFunds" => Some(VoteCall(ConvictionVotingError::InsufficientFunds)),
-                "NotDelegating"     => Some(VoteCall(ConvictionVotingError::NotDelegating)),
-                "Nonsense"          => Some(VoteCall(ConvictionVotingError::Nonsense)),
-                "MaxVotesReached"   => Some(VoteCall(ConvictionVotingError::MaxVotesReached)),
-                "ClassNeeded"       => Some(VoteCall(ConvictionVotingError::ClassNeeded)),
-                "BadClass"          => Some(VoteCall(ConvictionVotingError::BadClass)),
+                "NotOngoing"        => Some(ConvictionVotingError::NotOngoing),
+                "NotVoter"          => Some(ConvictionVotingError::NotVoter),
+                "NoPermission"      => Some(ConvictionVotingError::NoPermission),
+                "NoPermissionYet"   => Some(ConvictionVotingError::NoPermissionYet),
+                "AlreadyDelegating" => Some(ConvictionVotingError::AlreadyDelegating),
+                "AlreadyVoting"     => Some(ConvictionVotingError::AlreadyVoting),
+                "InsufficientFunds" => Some(ConvictionVotingError::InsufficientFunds),
+                "NotDelegating"     => Some(ConvictionVotingError::NotDelegating),
+                "Nonsense"          => Some(ConvictionVotingError::Nonsense),
+                "MaxVotesReached"   => Some(ConvictionVotingError::MaxVotesReached),
+                "ClassNeeded"       => Some(ConvictionVotingError::ClassNeeded),
+                "BadClass"          => Some(ConvictionVotingError::BadClass),
                 _ => None
-            }
+            }.map(GloveError::VoteCall)
         })
-        .unwrap_or_else(|| ModuleCall(module_error));
+        .unwrap_or_else(|| GloveError::ModuleCall(module_error));
         Err(error)
 }
 
@@ -208,7 +229,7 @@ async fn proxy_call(
     };
 
     match dispatch_error {
-        Module(module_error) => Err(ModuleCall(module_error)),
+        Module(module_error) => Err(GloveError::ModuleCall(module_error)),
         _ => Err(GloveError::ProxyCall(dispatch_error))
     }
 }
@@ -225,6 +246,8 @@ enum GloveError {
     VoteCall(ConvictionVotingError),
     #[error("Requested votes netted to zero. This is a temporary issue, which will be implemented as obstain votes")]
     NetZeroMixVotes,
+    #[error("Account has not voted for this poll")]
+    PollNotVotedFor
     // #[error("Internal server error")]
     // InternalServerError,
 }
@@ -232,9 +255,89 @@ enum GloveError {
 impl IntoResponse for GloveError {
     fn into_response(self) -> Response {
         let status_code = match self {
-            VoteCall(_) => StatusCode::BAD_REQUEST,
+            GloveError::VoteCall(_) => StatusCode::BAD_REQUEST,
+            GloveError::PollNotVotedFor => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR
         };
         (status_code, self.to_string()).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn add_new_vote_and_then_remove() {
+        let glove_state = GloveState::default();
+        let account = AccountId32::from([1; 32]);
+        let vote_request = VoteRequest::new(account.clone(), 1, true, 10);
+
+        let poll_requests = glove_state.add_vote_request(vote_request.clone()).await;
+        assert_eq!(poll_requests, vec![vote_request]);
+
+        let poll_requests = glove_state.remove_vote_request(1, account).await;
+        assert_eq!(poll_requests, Some(vec![]));
+    }
+
+    #[tokio::test]
+    async fn remove_from_non_existent_poll() {
+        let glove_state = GloveState::default();
+        let account = AccountId32::from([1; 32]);
+
+        let poll_requests = glove_state.remove_vote_request(1, account).await;
+        assert_eq!(poll_requests, None);
+    }
+
+    #[tokio::test]
+    async fn remove_non_existent_account_within_poll() {
+        let glove_state = GloveState::default();
+        let account_1 = AccountId32::from([1; 32]);
+        let account_2 = AccountId32::from([2; 32]);
+        let vote_request = VoteRequest::new(account_1.clone(), 1, true, 10);
+
+        glove_state.add_vote_request(vote_request.clone()).await;
+
+        let poll_requests = glove_state.remove_vote_request(1, account_2).await;
+        assert_eq!(poll_requests, None);
+    }
+
+    #[tokio::test]
+    async fn replace_vote() {
+        let glove_state = GloveState::default();
+        let account = AccountId32::from([1; 32]);
+        let vote_request_1 = VoteRequest::new(account.clone(), 1, true, 10);
+        let vote_request_2 = VoteRequest::new(account.clone(), 1, true, 20);
+
+        glove_state.add_vote_request(vote_request_1.clone()).await;
+        let poll_requests = glove_state.add_vote_request(vote_request_2.clone()).await;
+        assert_eq!(poll_requests, vec![vote_request_2]);
+    }
+
+    #[tokio::test]
+    async fn two_votes_in_poll_returned_in_order() {
+        let glove_state = GloveState::default();
+        let account_1 = AccountId32::from([1; 32]);
+        let account_2 = AccountId32::from([2; 32]);
+        let vote_request_1 = VoteRequest::new(account_1.clone(), 1, true, 10);
+        let vote_request_2 = VoteRequest::new(account_2.clone(), 1, false, 20);
+
+        glove_state.add_vote_request(vote_request_2.clone()).await;
+        let poll_requests = glove_state.add_vote_request(vote_request_1.clone()).await;
+        assert_eq!(poll_requests, vec![vote_request_1, vote_request_2]);
+    }
+
+    #[tokio::test]
+    async fn two_polls_voted_for_by_same_account() {
+        let glove_state = GloveState::default();
+        let account = AccountId32::from([1; 32]);
+        let vote_request_1 = VoteRequest::new(account.clone(), 1, true, 10);
+        let vote_request_2 = VoteRequest::new(account.clone(), 2, false, 20);
+
+        let poll_requests = glove_state.add_vote_request(vote_request_1.clone()).await;
+        assert_eq!(poll_requests, vec![vote_request_1]);
+
+        let poll_requests = glove_state.add_vote_request(vote_request_2.clone()).await;
+        assert_eq!(poll_requests, vec![vote_request_2]);
     }
 }

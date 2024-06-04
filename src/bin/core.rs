@@ -60,7 +60,7 @@ impl SubstrateNetwork {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct VoteRequest {
     pub account: AccountId32,
     pub poll_index: u32,
