@@ -47,7 +47,7 @@ impl SubstrateNetwork {
     pub async fn call_extrinsic<Call: Payload>(
         &self,
         payload: &Call
-    ) -> Result<ExtrinsicEvents<PolkadotConfig>> {
+    ) -> Result<ExtrinsicEvents<PolkadotConfig>, subxt::Error> {
         Ok(
             self.api.tx()
                 .sign_and_submit_then_watch_default(payload, &self.keypair).await?
@@ -63,15 +63,15 @@ impl SubstrateNetwork {
 #[derive(Debug, Clone, Deserialize)]
 pub struct VoteRequest {
     pub account: AccountId32,
-    pub nonce: u128,
     pub poll_index: u32,
+    pub nonce: u128,
     pub aye: bool,
     pub balance: u128
 }
 
 impl VoteRequest {
     pub fn new(account: AccountId32, poll_index: u32, aye: bool, balance: u128) -> Self {
-        Self { account, nonce: random(), poll_index, aye, balance }
+        Self { account, poll_index, nonce: random(), aye, balance }
     }
 }
 
