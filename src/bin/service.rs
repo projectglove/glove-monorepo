@@ -203,7 +203,9 @@ async fn proxy_conviction_voting_call(
         Ok(_) => return Ok(())
     };
 
-    // Extract the underlying ConvictionVoting error
+    // Annoyingly, this ModuleError is from the metadata runtime, and not the
+    // `subxt::error::dispatch_error` version which has the `as_root_error` function for nicely
+    // converting to the pallet-specfic error. Instead, we're forced to do this manual conversion.
     let error = network.api
         .metadata()
         .pallet_by_name("ConvictionVoting")

@@ -1,11 +1,16 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use DispatchError::Module;
 use sp_core::crypto::AccountId32;
+use subxt::error::DispatchError;
+use subxt::Error::Runtime;
 use subxt_signer::sr25519::Keypair;
 
 use core::account_to_address;
-use core::metadata::runtime_types::polkadot_runtime::ProxyType;
+use core::metadata::runtime_types::pallet_proxy::pallet::Error::Duplicate;
+use core::metadata::runtime_types::polkadot_runtime::{ProxyType, RuntimeError};
 use core::SubstrateNetwork;
+use RuntimeError::Proxy;
 
 mod core;
 
@@ -20,8 +25,16 @@ async fn main() -> Result<()> {
                 .proxy()
                 .add_proxy(account_to_address(proxy_account), ProxyType::Governance, 0)
                 .unvalidated();
-            network.call_extrinsic(&add_proxy_call).await?;
-            println!("Account added to Glove proxy");
+            match network.call_extrinsic(&add_proxy_call).await {
+                Ok(_) => println!("Account added to Glove proxy"),
+                Err(Runtime(Module(module_error))) => {
+                    match module_error.as_root_error::<RuntimeError>() {
+                        Ok(Proxy(Duplicate)) => println!("Account already part of Glove proxy"),
+                        _ => return Err(Runtime(Module(module_error)))?
+                    }
+                },
+                Err(e) => return Err(e)?
+            };
         }
     }
 
