@@ -121,11 +121,12 @@ async fn vote(context: State<Arc<GloveContext>>, Json(payload): Json<VoteRequest
 
 async fn remove_vote(context: State<Arc<GloveContext>>, Json(payload): Json<RemoveVoteRequest>) -> GloveResult {
     let poll_requests = context.state
-        .remove_vote_request(payload.poll_index, payload.account).await
+        .remove_vote_request(payload.poll_index, payload.account.clone()).await
         .ok_or(GloveError::PollNotVotedFor)?;
     // TODO Only do the mixing if the votes were previously submitted on-chain
-    // TODO However, this will presumably not remove the original vote for this account from on-chain
-    //  and so it's likely we need to make a remove-vote call in the same batch
+    proxy_remove_vote(&context.network, payload.account, payload.poll_index).await?;
+    // TODO Do this in the background; there's no need to block the client as they're no longer
+    //  part of the mixing
     mix_votes_and_submit_on_chain(&context.network, payload.poll_index, poll_requests).await?;
     Ok(())
 }
@@ -145,12 +146,15 @@ async fn mix_votes_and_submit_on_chain(
         return Err(GloveError::NetZeroMixVotes)
     };
 
+    // We can't use batchAll to submit the votes atomically, because it doesn't work with the proxy
+    // extrinic. proxy doesn't propagate any errors from the proxied call (it captures it in a
+    // ProxyExecuted event), and so batchAll doesn't receive any errors to terminate the batch.
     for (request, mixed_balance) in poll_requests.into_iter().zip(mixing_result.balances) {
         // TODO Deal with mixed_balance of zero
         // TODO conviction multiplier
         let vote = if mixing_result.aye { AYE } else { NAY };
-        // TODO Use batchAll to ensure the votes are committed together atomically
-        // TODO Retry on NotProxy error with the offending request removed.
+        // TODO Errors which cause the request to be removed, and mixing done again: NotProxy,
+        //  InsufficientBalance,
         proxy_vote(network, request.account, poll_index, vote, mixed_balance).await?;
     }
 
