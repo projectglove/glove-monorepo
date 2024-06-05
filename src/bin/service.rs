@@ -15,18 +15,16 @@ use tokio::sync::Mutex;
 
 use core::{SubstrateNetwork, VoteRequest};
 use core::metadata::proxy::events::ProxyExecuted;
-use core::metadata::runtime_types::pallet_conviction_voting::pallet::Call::vote as vote_call;
+use core::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
 use core::metadata::runtime_types::pallet_conviction_voting::pallet::Error as ConvictionVotingError;
-use core::metadata::runtime_types::pallet_conviction_voting::vote::AccountVote::Standard;
+use core::metadata::runtime_types::pallet_conviction_voting::vote::AccountVote;
 use core::metadata::runtime_types::pallet_conviction_voting::vote::Vote;
-use core::metadata::runtime_types::polkadot_runtime::RuntimeCall::ConvictionVoting;
+use core::metadata::runtime_types::polkadot_runtime::RuntimeCall;
 use core::metadata::runtime_types::sp_runtime::DispatchError;
+use core::metadata::runtime_types::sp_runtime::ModuleError;
+use core::RemoveVoteRequest;
 use DispatchError::Module;
 use mixing::VoteMixRequest;
-
-use crate::core::metadata::runtime_types::polkadot_runtime::RuntimeCall;
-use crate::core::metadata::runtime_types::sp_runtime::ModuleError;
-use crate::core::RemoveVoteRequest;
 
 mod mixing;
 mod core;
@@ -166,15 +164,33 @@ async fn proxy_vote(
     vote: u8,
     balance: u128
 ) -> GloveResult {
-    let voting_call = ConvictionVoting(vote_call {
+    let vote_call = ConvictionVotingCall::vote {
         poll_index,
-        vote: Standard {
+        vote: AccountVote::Standard {
             vote: Vote(vote),
             balance,
         }
-    });
+    };
+    Ok(proxy_conviction_voting_call(network, account, vote_call).await?)
+}
 
-    let module_error = match proxy_call(network, account, voting_call).await {
+async fn proxy_remove_vote(
+    network: &SubstrateNetwork,
+    account: AccountId32,
+    poll_index: u32
+) -> GloveResult {
+    let remove_vote_call = ConvictionVotingCall::remove_vote { class: None, index: poll_index };
+    Ok(proxy_conviction_voting_call(network, account, remove_vote_call).await?)
+}
+
+async fn proxy_conviction_voting_call(
+    network: &SubstrateNetwork,
+    account: AccountId32,
+    call: ConvictionVotingCall
+) -> GloveResult {
+    let proxy_result = proxy_call(network, account, RuntimeCall::ConvictionVoting(call)).await;
+
+    let module_error = match proxy_result {
         Err(GloveError::ModuleCall(module_error)) => module_error,
         Err(error) => return Err(error),
         Ok(_) => return Ok(())
@@ -204,20 +220,20 @@ async fn proxy_vote(
             }.map(GloveError::VoteCall)
         })
         .unwrap_or_else(|| GloveError::ModuleCall(module_error));
-        Err(error)
+    Err(error)
 }
 
 async fn proxy_call(
     network: &SubstrateNetwork,
-    account: AccountId32,
+    real_account: AccountId32,
     call: RuntimeCall
 ) -> GloveResult {
     // Annoyingly, subxt uses a different AccountId32 to sp-core.
-    let account = subxt_core::utils::AccountId32::from(Into::<[u8; 32]>::into(account));
+    let real_account = subxt_core::utils::AccountId32::from(Into::<[u8; 32]>::into(real_account));
 
     let proxy_payload = core::metadata::tx()
         .proxy()
-        .proxy(subxt_core::utils::MultiAddress::Id(account), None, call)
+        .proxy(subxt_core::utils::MultiAddress::Id(real_account), None, call)
         .unvalidated();  // For some reason the hash of the proxy call doesn't match
 
     let proxy_executed = network.call_extrinsic(&proxy_payload).await?.find_first::<ProxyExecuted>()?;
