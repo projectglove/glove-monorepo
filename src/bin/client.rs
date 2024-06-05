@@ -1,7 +1,10 @@
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
+use sp_core::crypto::AccountId32;
 use subxt_signer::sr25519::Keypair;
 
+use core::account_to_address;
+use core::metadata::runtime_types::polkadot_runtime::ProxyType;
 use core::SubstrateNetwork;
 
 mod core;
@@ -11,19 +14,44 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let network = SubstrateNetwork::connect(&args.network_url, args.secret_phrase).await?;
 
+    match args.command {
+        Command::AddProxy { proxy_account } => {
+            let add_proxy_call = core::metadata::tx()
+                .proxy()
+                .add_proxy(account_to_address(proxy_account), ProxyType::Governance, 0)
+                .unvalidated();
+            network.call_extrinsic(&add_proxy_call).await?;
+            println!("Account added to Glove proxy");
+        }
+    }
+
     Ok(())
 }
 
-#[derive(Parser, Debug)]
+#[derive(Debug, Parser)]
 #[command(version, about = "Glove CLI client")]
 struct Args {
     /// Secret phrase for the Glove client account
-    #[arg(long, value_parser = glove::parse_secret_phrase)]
+    #[arg(long, value_parser = core::parse_secret_phrase)]
     secret_phrase: Keypair,
 
     /// URL for the network endpoint.
     ///
     /// See https://wiki.polkadot.network/docs/maintain-endpoints for more information.
     #[arg(long)]
-    network_url: String
+    network_url: String,
+
+    #[clap(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    AddProxy {
+        // TODO This shouldn't really be needed. The network_url arg should be glove_service_url
+        //  and that should have a metatdata end-point which returns the Glove proxy account and the
+        //  network URL the service is using.
+        /// The Glove proxy account to be added to
+        proxy_account: AccountId32
+    }
 }

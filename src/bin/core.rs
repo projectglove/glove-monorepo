@@ -9,6 +9,7 @@ use subxt::blocks::ExtrinsicEvents;
 use subxt::OnlineClient;
 use subxt_core::config::PolkadotConfig;
 use subxt_core::tx::payload::Payload;
+use subxt_core::utils::MultiAddress;
 use subxt_signer::SecretUri;
 use subxt_signer::sr25519::Keypair;
 
@@ -58,6 +59,12 @@ impl SubstrateNetwork {
     pub fn account_string(&self, account: &AccountId32) -> String {
         account.to_ss58check_with_version(self.ss58_format)
     }
+}
+
+pub fn account_to_address(account: AccountId32) -> MultiAddress<subxt_core::utils::AccountId32, ()> {
+    // Annoyingly, subxt uses a different AccountId32 to sp-core.
+    let account = subxt_core::utils::AccountId32::from(Into::<[u8; 32]>::into(account));
+    MultiAddress::Id(account)
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

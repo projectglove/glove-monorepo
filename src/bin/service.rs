@@ -14,6 +14,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
 use core::{SubstrateNetwork, VoteRequest};
+use core::account_to_address;
 use core::metadata::proxy::events::ProxyExecuted;
 use core::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
 use core::metadata::runtime_types::pallet_conviction_voting::pallet::Error as ConvictionVotingError;
@@ -234,12 +235,9 @@ async fn proxy_call(
     real_account: AccountId32,
     call: RuntimeCall
 ) -> GloveResult {
-    // Annoyingly, subxt uses a different AccountId32 to sp-core.
-    let real_account = subxt_core::utils::AccountId32::from(Into::<[u8; 32]>::into(real_account));
-
     let proxy_payload = core::metadata::tx()
         .proxy()
-        .proxy(subxt_core::utils::MultiAddress::Id(real_account), None, call)
+        .proxy(account_to_address(real_account), None, call)
         .unvalidated();  // For some reason the hash of the proxy call doesn't match
 
     let proxy_executed = network.call_extrinsic(&proxy_payload).await?.find_first::<ProxyExecuted>()?;
