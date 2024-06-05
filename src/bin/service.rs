@@ -5,7 +5,7 @@ use axum::extract::{Json, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Router;
-use axum::routing::post;
+use axum::routing::{get, post};
 use clap::Parser;
 use itertools::Itertools;
 use sp_runtime::AccountId32;
@@ -13,7 +13,7 @@ use subxt_signer::sr25519::Keypair;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
-use core::{SubstrateNetwork, VoteRequest};
+use core::{ServiceInfo, SubstrateNetwork, VoteRequest};
 use core::account_to_address;
 use core::metadata::proxy::events::ProxyExecuted;
 use core::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
@@ -53,7 +53,8 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let network = SubstrateNetwork::connect(&args.network_url, args.proxy_secret_phrase).await?;
+    let network = SubstrateNetwork::connect(args.network_url, args.proxy_secret_phrase).await?;
+    println!("Proxy address: {}", network.account());
 
     let glove_context = Arc::new(GloveContext {
         network,
@@ -61,6 +62,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let router = Router::new()
+        .route("/info", get(info))
         .route("/vote", post(vote))
         .route("/remove-vote", post(remove_vote))
         .with_state(glove_context);
@@ -106,6 +108,13 @@ impl GloveState {
         println!();
         poll_requests.clone().into_values().sorted_by(|a, b| Ord::cmp(&a.account, &b.account)).collect()
     }
+}
+
+async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
+    Json(ServiceInfo {
+        proxy_account: (&context.network).account(),
+        network_url: context.network.url.clone()
+    })
 }
 
 // TODO Reject for polls which are known to have closed

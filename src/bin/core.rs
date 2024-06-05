@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use rand::random;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sp_core::crypto::{AccountId32, Ss58Codec};
 use ss58_registry::{Ss58AddressFormat, Ss58AddressFormatRegistry, Token};
 use subxt::blocks::ExtrinsicEvents;
@@ -20,7 +20,9 @@ pub fn parse_secret_phrase(str: &str) -> Result<Keypair> {
     Ok(Keypair::from_uri(&SecretUri::from_str(str)?)?)
 }
 
+#[derive(Clone)]
 pub struct SubstrateNetwork {
+    pub url: String,
     pub api: OnlineClient<PolkadotConfig>,
     pub ss58_format: Ss58AddressFormat,
     pub token_decimals: u8,
@@ -28,8 +30,8 @@ pub struct SubstrateNetwork {
 }
 
 impl SubstrateNetwork {
-    pub async fn connect(url: &String, keypair: Keypair) -> Result<Self> {
-        let api = OnlineClient::<PolkadotConfig>::from_url(url).await
+    pub async fn connect(url: String, keypair: Keypair) -> Result<Self> {
+        let api = OnlineClient::<PolkadotConfig>::from_url(url.clone()).await
             .with_context(|| "Unable to connect to network endpoint:")?;
         let ss58_address_format = api.constants()
             .at(&metadata::constants().system().ss58_prefix())
@@ -40,9 +42,11 @@ impl SubstrateNetwork {
             .first()
             .map(|token_registry| Token::from(*token_registry).decimals)
             .unwrap_or(12);
-        let network = Self { api, ss58_format: ss58.into(), token_decimals, keypair };
-        println!("Address: {}", network.account_string(&network.keypair.public_key().0.into()));
-        Ok(network)
+        Ok(Self { url, api, ss58_format: ss58.into(), token_decimals, keypair })
+    }
+
+    pub fn account(&self) -> AccountId32 {
+        self.keypair.public_key().0.into()
     }
 
     pub async fn call_extrinsic<Call: Payload>(
@@ -65,6 +69,12 @@ pub fn account_to_address(account: AccountId32) -> MultiAddress<subxt_core::util
     // Annoyingly, subxt uses a different AccountId32 to sp-core.
     let account = subxt_core::utils::AccountId32::from(Into::<[u8; 32]>::into(account));
     MultiAddress::Id(account)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ServiceInfo {
+    pub proxy_account: AccountId32,
+    pub network_url: String
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
