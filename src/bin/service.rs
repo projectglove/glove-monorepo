@@ -125,9 +125,11 @@ async fn remove_vote(context: State<Arc<GloveContext>>, Json(payload): Json<Remo
         .ok_or(GloveError::PollNotVotedFor)?;
     // TODO Only do the mixing if the votes were previously submitted on-chain
     proxy_remove_vote(&context.network, payload.account, payload.poll_index).await?;
-    // TODO Do this in the background; there's no need to block the client as they're no longer
-    //  part of the mixing
-    mix_votes_and_submit_on_chain(&context.network, payload.poll_index, poll_requests).await?;
+    if !poll_requests.is_empty() {
+        // TODO Do this in the background; there's no need to block the client as they're no longer
+        //  part of the mixing
+        mix_votes_and_submit_on_chain(&context.network, payload.poll_index, poll_requests).await?;
+    }
     Ok(())
 }
 
