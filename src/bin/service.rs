@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::{Json, State};
 use axum::http::StatusCode;
@@ -11,7 +12,9 @@ use itertools::Itertools;
 use sp_runtime::AccountId32;
 use subxt_signer::sr25519::Keypair;
 use tokio::net::TcpListener;
+use tokio::spawn;
 use tokio::sync::Mutex;
+use tokio::time::sleep;
 
 use core::{is_glove_member, ServiceInfo, SubstrateNetwork, VoteRequest};
 use core::account_to_address;
@@ -79,35 +82,78 @@ struct GloveContext {
 
 #[derive(Default)]
 struct GloveState {
-    polls: Mutex<HashMap<u32, HashMap<AccountId32, VoteRequest>>>
+    polls: Mutex<HashMap<u32, Poll>>
 }
 
 impl GloveState {
-    async fn add_vote_request(&self, vote_request: VoteRequest) -> Vec<VoteRequest> {
+    async fn get_poll(&self, poll_index: u32) -> Poll {
         let mut polls = self.polls.lock().await;
-        let poll_index = vote_request.poll_index;
-        let poll_requests = polls.entry(poll_index).or_default();
-        poll_requests.insert(vote_request.account.clone(), vote_request);
-        Self::map_to_vec(poll_index, poll_requests)
+        polls
+            .entry(poll_index)
+            .or_insert_with(|| Poll {
+                index: poll_index,
+                inner: Arc::default()
+            })
+            .clone()
     }
 
-    async fn remove_vote_request(&self, poll_index: u32, account: AccountId32) -> Option<Vec<VoteRequest>> {
-        let mut polls = self.polls.lock().await;
-        let poll_requests = polls.get_mut(&poll_index)?;
-        poll_requests.remove(&account)?;
-        // TODO Fix "cannot borrow `polls` as mutable more than once at a time"
-        // if poll_requests.is_empty() {
-        //     polls.remove(&poll_index);
-        // }
-        Some(Self::map_to_vec(poll_index, poll_requests))
+    async fn get_optional_poll(&self, poll_index: u32) -> Option<Poll> {
+        let map = self.polls.lock().await;
+        map.get(&poll_index).map(|p| p.clone())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Poll {
+    index: u32,
+    inner: Arc<Mutex<InnerPoll>>
+}
+
+impl Poll {
+    /// Returns `true` if vote mixing should be initiated as a background task.
+    async fn add_vote_request(&self, vote_request: VoteRequest) -> bool {
+        if vote_request.poll_index != self.index {
+            panic!("Request doesn't belong here: {} vs {:?}", self.index, vote_request);
+        }
+        let mut poll = self.inner.lock().await;
+        poll.requests.insert(vote_request.account.clone(), vote_request);
+        if !poll.pending_mix {
+            poll.pending_mix = true;
+            true
+        } else {
+            false
+        }
     }
 
-    fn map_to_vec(poll_index: u32, poll_requests: &HashMap<AccountId32, VoteRequest>) -> Vec<VoteRequest> {
-        println!("Requests for poll {}", poll_index);
-        poll_requests.values().for_each(|r| println!("{:?}", r));
-        println!();
-        poll_requests.clone().into_values().sorted_by(|a, b| Ord::cmp(&a.account, &b.account)).collect()
+    async fn remove_vote_request(&self, account: AccountId32) -> Option<bool> {
+        let mut poll = self.inner.lock().await;
+        let _ = poll.requests.remove(&account)?;
+        if !poll.pending_mix {
+            poll.pending_mix = true;
+            Some(true)
+        } else {
+            Some(false)
+        }
     }
+
+    async fn begin_mix(&self) -> Vec<VoteRequest> {
+        let mut poll = self.inner.lock().await;
+        poll.pending_mix = false;
+        poll.requests
+            .clone()
+            .into_values()
+            .sorted_by(|a, b| Ord::cmp(&a.account, &b.account))
+            .collect()
+    }
+}
+
+#[derive(Debug, Default)]
+struct InnerPoll {
+    requests: HashMap<AccountId32, VoteRequest>,
+    /// Initially `false`, this is `true` if a background task has been kicked off to mix the vote
+    /// requests and submit the results on-chain. The task will set this back to `false` once it has
+    /// started by calling [Poll::begin_mix].
+    pending_mix: bool
 }
 
 async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
@@ -118,18 +164,19 @@ async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
 }
 
 // TODO Reject for polls which are known to have closed
+// TODO Reject for unknown polls
 // TODO Reject for accounts which are not proxied to the GloveProxy
 // TODO Reject for zero balance
 async fn vote(context: State<Arc<GloveContext>>, Json(payload): Json<VoteRequest>) -> GloveResult {
-    let network = &context.network;
-    if !is_glove_member(network, payload.account.clone(), network.account()).await? {
+    let poll_index = payload.poll_index;
+    if !is_glove_member(&context.network, payload.account.clone(), context.network.account()).await? {
         return Err(GloveError::NotMember);
     }
-    let poll_index = payload.poll_index;
-    let poll_requests = context.state.add_vote_request(payload).await;
-    // TODO Do mixing and submitting on-chain at correct time(s), rather than each time a request is
-    //  submitted
-    mix_votes_and_submit_on_chain(network, poll_index, poll_requests).await?;
+    let poll = context.state.get_poll(poll_index).await;
+    let initiate_mix = poll.add_vote_request(payload).await;
+    if initiate_mix {
+        schedule_vote_mix(context.network.clone(), poll);
+    }
     Ok(())
 }
 
@@ -138,17 +185,35 @@ async fn remove_vote(context: State<Arc<GloveContext>>, Json(payload): Json<Remo
     if !is_glove_member(network, payload.account.clone(), network.account()).await? {
         return Err(GloveError::NotMember);
     }
-    let poll_requests = context.state
-        .remove_vote_request(payload.poll_index, payload.account.clone()).await
-        .ok_or(GloveError::PollNotVotedFor)?;
-    // TODO Only do the mixing if the votes were previously submitted on-chain
+    let Some(poll) = context.state.get_optional_poll(payload.poll_index).await else {
+        return Err(GloveError::PollNotVotedFor);
+    };
+    let Some(initiate_mix) = poll.remove_vote_request(payload.account.clone()).await else {
+        return Err(GloveError::PollNotVotedFor);
+    };
+
     proxy_remove_vote(network, payload.account, payload.poll_index).await?;
-    if !poll_requests.is_empty() {
-        // TODO Do this in the background; there's no need to block the client as they're no longer
-        //  part of the mixing
-        mix_votes_and_submit_on_chain(network, payload.poll_index, poll_requests).await?;
+    if initiate_mix {
+        // TODO Only do the mixing if the votes were previously submitted on-chain
+        schedule_vote_mix(context.network.clone(), poll);
     }
     Ok(())
+}
+
+/// Schedule a background task to mix the votes and submit them on-chain after a delay. Any voting
+//  requests which are received in the interim will be included in the mix.
+fn schedule_vote_mix(network: SubstrateNetwork, poll: Poll) {
+    println!("Scheduling vote mixing for poll {}", poll.index);
+    spawn(async move {
+        // TODO Figure out the policy for submitting on-chain
+        sleep(Duration::from_secs(10)).await;
+        let poll_requests = poll.begin_mix().await;
+        println!("Mixing votes for poll {}:", poll.index);
+        poll_requests.iter().for_each(|r| println!("{:?}", r));
+        println!();
+        let result = mix_votes_and_submit_on_chain(&network, poll.index, poll_requests).await;
+        println!("Vote mixing for poll {} completed with {:?}", poll.index, result);
+    });
 }
 
 async fn mix_votes_and_submit_on_chain(
@@ -169,6 +234,7 @@ async fn mix_votes_and_submit_on_chain(
     // We can't use batchAll to submit the votes atomically, because it doesn't work with the proxy
     // extrinic. proxy doesn't propagate any errors from the proxied call (it captures it in a
     // ProxyExecuted event), and so batchAll doesn't receive any errors to terminate the batch.
+    // TODO Do this in parallel
     for (request, mixed_balance) in poll_requests.into_iter().zip(mixing_result.balances) {
         // TODO Deal with mixed_balance of zero
         // TODO conviction multiplier
@@ -315,20 +381,26 @@ mod tests {
         let account = AccountId32::from([1; 32]);
         let vote_request = VoteRequest::new(account.clone(), 1, true, 10);
 
-        let poll_requests = glove_state.add_vote_request(vote_request.clone()).await;
-        assert_eq!(poll_requests, vec![vote_request]);
+        let poll = glove_state.get_poll(1).await;
 
-        let poll_requests = glove_state.remove_vote_request(1, account).await;
-        assert_eq!(poll_requests, Some(vec![]));
+        let pending_mix = poll.add_vote_request(vote_request.clone()).await;
+        assert_eq!(pending_mix, true);
+        let vote_requeats = poll.begin_mix().await;
+        assert_eq!(vote_requeats, vec![vote_request]);
+
+        let pending_mix = poll.remove_vote_request(account).await;
+        assert_eq!(pending_mix, Some(true));
+        let vote_requeats = poll.begin_mix().await;
+        assert_eq!(vote_requeats, vec![]);
     }
 
     #[tokio::test]
     async fn remove_from_non_existent_poll() {
         let glove_state = GloveState::default();
         let account = AccountId32::from([1; 32]);
-
-        let poll_requests = glove_state.remove_vote_request(1, account).await;
-        assert_eq!(poll_requests, None);
+        let poll = glove_state.get_poll(1).await;
+        let pending_mix = poll.remove_vote_request(account).await;
+        assert_eq!(pending_mix, None);
     }
 
     #[tokio::test]
@@ -338,48 +410,49 @@ mod tests {
         let account_2 = AccountId32::from([2; 32]);
         let vote_request = VoteRequest::new(account_1.clone(), 1, true, 10);
 
-        glove_state.add_vote_request(vote_request.clone()).await;
+        let poll = glove_state.get_poll(1).await;
+        poll.add_vote_request(vote_request.clone()).await;
 
-        let poll_requests = glove_state.remove_vote_request(1, account_2).await;
-        assert_eq!(poll_requests, None);
+        let pending_mix = poll.remove_vote_request(account_2).await;
+        assert_eq!(pending_mix, None);
     }
 
     #[tokio::test]
-    async fn replace_vote() {
+    async fn replace_vote_before_mixing() {
         let glove_state = GloveState::default();
         let account = AccountId32::from([1; 32]);
         let vote_request_1 = VoteRequest::new(account.clone(), 1, true, 10);
         let vote_request_2 = VoteRequest::new(account.clone(), 1, true, 20);
 
-        glove_state.add_vote_request(vote_request_1.clone()).await;
-        let poll_requests = glove_state.add_vote_request(vote_request_2.clone()).await;
-        assert_eq!(poll_requests, vec![vote_request_2]);
+        let poll = glove_state.get_poll(1).await;
+
+        let pending_mix = poll.add_vote_request(vote_request_1.clone()).await;
+        assert_eq!(pending_mix, true);
+        let pending_mix = poll.add_vote_request(vote_request_2.clone()).await;
+        assert_eq!(pending_mix, false);
+
+        let vote_requeats = poll.begin_mix().await;
+        assert_eq!(vote_requeats, vec![vote_request_2]);
     }
 
     #[tokio::test]
-    async fn two_votes_in_poll_returned_in_order() {
+    async fn votes_from_two_accounts_in_between_mixing() {
         let glove_state = GloveState::default();
         let account_1 = AccountId32::from([1; 32]);
         let account_2 = AccountId32::from([2; 32]);
         let vote_request_1 = VoteRequest::new(account_1.clone(), 1, true, 10);
         let vote_request_2 = VoteRequest::new(account_2.clone(), 1, false, 20);
 
-        glove_state.add_vote_request(vote_request_2.clone()).await;
-        let poll_requests = glove_state.add_vote_request(vote_request_1.clone()).await;
-        assert_eq!(poll_requests, vec![vote_request_1, vote_request_2]);
-    }
+        let poll = glove_state.get_poll(1).await;
 
-    #[tokio::test]
-    async fn two_polls_voted_for_by_same_account() {
-        let glove_state = GloveState::default();
-        let account = AccountId32::from([1; 32]);
-        let vote_request_1 = VoteRequest::new(account.clone(), 1, true, 10);
-        let vote_request_2 = VoteRequest::new(account.clone(), 2, false, 20);
+        let pending_mix = poll.add_vote_request(vote_request_2.clone()).await;
+        assert_eq!(pending_mix, true);
+        let vote_requeats = poll.begin_mix().await;
+        assert_eq!(vote_requeats, vec![vote_request_2.clone()]);
 
-        let poll_requests = glove_state.add_vote_request(vote_request_1.clone()).await;
-        assert_eq!(poll_requests, vec![vote_request_1]);
-
-        let poll_requests = glove_state.add_vote_request(vote_request_2.clone()).await;
-        assert_eq!(poll_requests, vec![vote_request_2]);
+        let pending_mix = poll.add_vote_request(vote_request_1.clone()).await;
+        assert_eq!(pending_mix, true);
+        let vote_requeats = poll.begin_mix().await;
+        assert_eq!(vote_requeats, vec![vote_request_1, vote_request_2]);
     }
 }
