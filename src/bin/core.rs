@@ -65,10 +65,13 @@ impl SubstrateNetwork {
     }
 }
 
+// Annoyingly, subxt uses a different AccountId32 to sp-core.
+pub fn core_to_subxt(account: AccountId32) -> subxt_core::utils::AccountId32 {
+    subxt_core::utils::AccountId32::from(Into::<[u8; 32]>::into(account))
+}
+
 pub fn account_to_address(account: AccountId32) -> MultiAddress<subxt_core::utils::AccountId32, ()> {
-    // Annoyingly, subxt uses a different AccountId32 to sp-core.
-    let account = subxt_core::utils::AccountId32::from(Into::<[u8; 32]>::into(account));
-    MultiAddress::Id(account)
+    MultiAddress::Id(core_to_subxt(account))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
