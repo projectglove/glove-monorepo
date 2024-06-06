@@ -13,7 +13,7 @@ use subxt_signer::sr25519::Keypair;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
-use core::{ServiceInfo, SubstrateNetwork, VoteRequest};
+use core::{is_glove_member, ServiceInfo, SubstrateNetwork, VoteRequest};
 use core::account_to_address;
 use core::metadata::proxy::events::ProxyExecuted;
 use core::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
@@ -121,24 +121,32 @@ async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
 // TODO Reject for accounts which are not proxied to the GloveProxy
 // TODO Reject for zero balance
 async fn vote(context: State<Arc<GloveContext>>, Json(payload): Json<VoteRequest>) -> GloveResult {
+    let network = &context.network;
+    if !is_glove_member(network, payload.account.clone(), network.account()).await? {
+        return Err(GloveError::NotMember);
+    }
     let poll_index = payload.poll_index;
     let poll_requests = context.state.add_vote_request(payload).await;
     // TODO Do mixing and submitting on-chain at correct time(s), rather than each time a request is
     //  submitted
-    mix_votes_and_submit_on_chain(&context.network, poll_index, poll_requests).await?;
+    mix_votes_and_submit_on_chain(network, poll_index, poll_requests).await?;
     Ok(())
 }
 
 async fn remove_vote(context: State<Arc<GloveContext>>, Json(payload): Json<RemoveVoteRequest>) -> GloveResult {
+    let network = &context.network;
+    if !is_glove_member(network, payload.account.clone(), network.account()).await? {
+        return Err(GloveError::NotMember);
+    }
     let poll_requests = context.state
         .remove_vote_request(payload.poll_index, payload.account.clone()).await
         .ok_or(GloveError::PollNotVotedFor)?;
     // TODO Only do the mixing if the votes were previously submitted on-chain
-    proxy_remove_vote(&context.network, payload.account, payload.poll_index).await?;
+    proxy_remove_vote(network, payload.account, payload.poll_index).await?;
     if !poll_requests.is_empty() {
         // TODO Do this in the background; there's no need to block the client as they're no longer
         //  part of the mixing
-        mix_votes_and_submit_on_chain(&context.network, payload.poll_index, poll_requests).await?;
+        mix_votes_and_submit_on_chain(network, payload.poll_index, poll_requests).await?;
     }
     Ok(())
 }
@@ -275,6 +283,8 @@ enum GloveError {
     ModuleCall(ModuleError),
     #[error("Problem with vote call: {0:?}")]
     VoteCall(ConvictionVotingError),
+    #[error("Client is not a member of the Glove proxy")]
+    NotMember,
     #[error("Requested votes netted to zero. This is a temporary issue, which will be implemented as obstain votes")]
     NetZeroMixVotes,
     #[error("Account has not voted for this poll")]
@@ -287,6 +297,7 @@ impl IntoResponse for GloveError {
     fn into_response(self) -> Response {
         let status_code = match self {
             GloveError::VoteCall(_) => StatusCode::BAD_REQUEST,
+            GloveError::NotMember => StatusCode::BAD_REQUEST,
             GloveError::PollNotVotedFor => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR
         };

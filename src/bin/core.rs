@@ -6,12 +6,16 @@ use serde::{Deserialize, Serialize};
 use sp_core::crypto::{AccountId32, Ss58Codec};
 use ss58_registry::{Ss58AddressFormat, Ss58AddressFormatRegistry, Token};
 use subxt::blocks::ExtrinsicEvents;
+use subxt::Error as SubxtError;
 use subxt::OnlineClient;
+use subxt::utils::AccountId32 as SubxtAccountId32;
 use subxt_core::config::PolkadotConfig;
 use subxt_core::tx::payload::Payload;
 use subxt_core::utils::MultiAddress;
 use subxt_signer::SecretUri;
 use subxt_signer::sr25519::Keypair;
+
+use metadata::runtime_types::polkadot_runtime::ProxyType;
 
 #[subxt::subxt(runtime_metadata_path = "assets/polkadot-metadata.scale")]
 pub mod metadata {}
@@ -52,7 +56,7 @@ impl SubstrateNetwork {
     pub async fn call_extrinsic<Call: Payload>(
         &self,
         payload: &Call
-    ) -> Result<ExtrinsicEvents<PolkadotConfig>, subxt::Error> {
+    ) -> Result<ExtrinsicEvents<PolkadotConfig>, SubxtError> {
         Ok(
             self.api.tx()
                 .sign_and_submit_then_watch_default(payload, &self.keypair).await?
@@ -65,16 +69,40 @@ impl SubstrateNetwork {
     }
 }
 
-// Annoyingly, subxt uses a different AccountId32 to sp-core.
-pub fn core_to_subxt(account: AccountId32) -> subxt_core::utils::AccountId32 {
-    subxt_core::utils::AccountId32::from(Into::<[u8; 32]>::into(account))
+pub async fn is_glove_member(
+    network: &SubstrateNetwork,
+    client_account: AccountId32,
+    glove_account: AccountId32
+) -> Result<bool, SubxtError> {
+    let proxies_query = metadata::storage()
+        .proxy()
+        .proxies(core_to_subxt(client_account))
+        .unvalidated();
+    let result = network.api.storage().at_latest().await?.fetch(&proxies_query).await?;
+    if let Some(proxies) = result {
+        let glove_account = core_to_subxt(glove_account);
+        Ok(proxies.0.0.iter().any(|proxy| {
+            let correct_type = match proxy.proxy_type {
+                ProxyType::Any | ProxyType::Governance => true,
+                _ => false
+            };
+            correct_type && proxy.delegate == glove_account
+        }))
+    } else {
+        Ok(false)
+    }
 }
 
-pub fn account_to_address(account: AccountId32) -> MultiAddress<subxt_core::utils::AccountId32, ()> {
+// Annoyingly, subxt uses a different AccountId32 to sp-core.
+pub fn core_to_subxt(account: AccountId32) -> SubxtAccountId32 {
+    SubxtAccountId32::from(Into::<[u8; 32]>::into(account))
+}
+
+pub fn account_to_address(account: AccountId32) -> MultiAddress<SubxtAccountId32, ()> {
     MultiAddress::Id(core_to_subxt(account))
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceInfo {
     pub proxy_account: AccountId32,
     pub network_url: String
