@@ -15,6 +15,9 @@ use tokio::net::TcpListener;
 use tokio::spawn;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
+use tower_http::trace::TraceLayer;
+use tracing::{debug, info};
+use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
 use core::{is_glove_member, ServiceInfo, SubstrateNetwork, VoteRequest};
 use core::account_to_address;
@@ -54,10 +57,17 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let filter = EnvFilter::try_new("subxt_core::events=info")?
+        // Set the base level to debug
+        .add_directive(LevelFilter::DEBUG.into());
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .init();
+
     let args = Args::parse();
 
     let network = SubstrateNetwork::connect(args.network_url, args.proxy_secret_phrase).await?;
-    println!("Proxy address: {}", network.account());
+    info!("Connected to Substrate network: {}", network.url);
 
     let glove_context = Arc::new(GloveContext {
         network,
@@ -68,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/info", get(info))
         .route("/vote", post(vote))
         .route("/remove-vote", post(remove_vote))
+        .layer(TraceLayer::new_for_http())
         .with_state(glove_context);
     let listener = TcpListener::bind("localhost:8080").await?;
     axum::serve(listener, router).await?;
@@ -163,9 +174,6 @@ async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
     })
 }
 
-// TODO Reject for polls which are known to have closed
-// TODO Reject for unknown polls
-// TODO Reject for accounts which are not proxied to the GloveProxy
 // TODO Reject for zero balance
 async fn vote(context: State<Arc<GloveContext>>, Json(payload): Json<VoteRequest>) -> GloveResult {
     let poll_index = payload.poll_index;
@@ -175,7 +183,7 @@ async fn vote(context: State<Arc<GloveContext>>, Json(payload): Json<VoteRequest
     let poll = context.state.get_poll(poll_index).await;
     let initiate_mix = poll.add_vote_request(payload).await;
     if initiate_mix {
-        schedule_vote_mix(context.network.clone(), poll);
+        schedule_vote_mixing(context.network.clone(), poll);
     }
     Ok(())
 }
@@ -195,24 +203,23 @@ async fn remove_vote(context: State<Arc<GloveContext>>, Json(payload): Json<Remo
     proxy_remove_vote(network, payload.account, payload.poll_index).await?;
     if initiate_mix {
         // TODO Only do the mixing if the votes were previously submitted on-chain
-        schedule_vote_mix(context.network.clone(), poll);
+        schedule_vote_mixing(context.network.clone(), poll);
     }
     Ok(())
 }
 
 /// Schedule a background task to mix the votes and submit them on-chain after a delay. Any voting
 //  requests which are received in the interim will be included in the mix.
-fn schedule_vote_mix(network: SubstrateNetwork, poll: Poll) {
-    println!("Scheduling vote mixing for poll {}", poll.index);
+fn schedule_vote_mixing(network: SubstrateNetwork, poll: Poll) {
+    debug!("Scheduling vote mixing for poll {}", poll.index);
     spawn(async move {
         // TODO Figure out the policy for submitting on-chain
         sleep(Duration::from_secs(10)).await;
         let poll_requests = poll.begin_mix().await;
-        println!("Mixing votes for poll {}:", poll.index);
-        poll_requests.iter().for_each(|r| println!("{:?}", r));
-        println!();
+        info!("Mixing votes for poll {}:", poll.index);
+        poll_requests.iter().for_each(|r| debug!("{:?}", r));
         let result = mix_votes_and_submit_on_chain(&network, poll.index, poll_requests).await;
-        println!("Vote mixing for poll {} completed with {:?}", poll.index, result);
+        debug!("Vote mixing for poll {} completed with {:?}", poll.index, result);
     });
 }
 
@@ -231,16 +238,20 @@ async fn mix_votes_and_submit_on_chain(
         return Err(GloveError::NetZeroMixVotes)
     };
 
+    debug!("Mixing result: {:?}", mixing_result);
+
     // We can't use batchAll to submit the votes atomically, because it doesn't work with the proxy
     // extrinic. proxy doesn't propagate any errors from the proxied call (it captures it in a
     // ProxyExecuted event), and so batchAll doesn't receive any errors to terminate the batch.
-    // TODO Do this in parallel
     for (request, mixed_balance) in poll_requests.into_iter().zip(mixing_result.balances) {
         // TODO Deal with mixed_balance of zero
         // TODO conviction multiplier
         let vote = if mixing_result.aye { AYE } else { NAY };
         // TODO Errors which cause the request to be removed, and mixing done again: NotProxy,
         //  InsufficientBalance,
+        // TODO Add another endpoint which a client can query with their nonce to see the status of
+        //  of their on-chain vote.
+        // TODO If it's a success then it could include the extrinsic coordinates.
         proxy_vote(network, request.account, poll_index, vote, mixed_balance).await?;
     }
 
@@ -320,6 +331,8 @@ async fn proxy_call(
     real_account: AccountId32,
     call: RuntimeCall
 ) -> GloveResult {
+    debug!("Proxy call {:?} on behalf of {}", call, real_account);
+
     let proxy_payload = core::metadata::tx()
         .proxy()
         .proxy(account_to_address(real_account), None, call)
