@@ -14,7 +14,7 @@ use core::ServiceInfo;
 use core::SubstrateNetwork;
 use RuntimeError::Proxy;
 
-use crate::core::VoteRequest;
+use crate::core::{RemoveVoteRequest, VoteRequest};
 
 mod core;
 
@@ -33,9 +33,12 @@ async fn main() -> Result<()> {
     let network = SubstrateNetwork::connect(service_info.network_url.clone(), args.secret_phrase).await?;
 
     let success_msg = match args.command {
-        Command::JoinGlove => join_glove(&service_info, &network).await?,
+        Command::JoinGlove =>
+            join_glove(&service_info, &network).await?,
         Command::Vote { poll_index, aye, balance } =>
-            vote(&args.glove_url, &http_client, &network, poll_index, aye, balance).await?
+            vote(&args.glove_url, &http_client, &network, poll_index, aye, balance).await?,
+        Command::RemoveVote { poll_index } =>
+            remove_vote(&args.glove_url, &http_client, &network, poll_index).await?
     };
     println!("{}", success_msg);
 
@@ -87,10 +90,32 @@ async fn vote(
     }
 }
 
+async fn remove_vote(
+    glove_url: &Url,
+    http_client: &Client,
+    network: &SubstrateNetwork,
+    poll_index: u32
+) -> Result<String> {
+    let remove_vote_request = RemoveVoteRequest {
+        account: network.account(),
+        poll_index
+    };
+    let response = http_client
+        .post(url_with_path(glove_url, "remove-vote"))
+        .json(&remove_vote_request)
+        .send().await
+        .context("Unable to send remove vote request")?;
+    if response.status() == StatusCode::OK {
+        Ok("Vote successfully removed".to_string())
+    } else {
+        bail!(response.text().await?)
+    }
+}
+
 fn url_with_path(url: &Url, path: &str) -> Url {
-    let mut new_url = url.clone();
-    new_url.set_path(path);
-    new_url
+    let mut with_path = url.clone();
+    with_path.set_path(path);
+    with_path
 }
 
 #[derive(Debug, Parser)]
@@ -112,7 +137,8 @@ struct Args {
 enum Command {
     /// Add Glove as a goverance proxy to the account. This is a one-time operation.
     JoinGlove,
-    // Submit vote
+    /// Submit vote for inclusion in Glove mixing. The mixing process is not necessarily immediate.
+    /// Voting on the same poll twice will replace the previous vote.
     Vote {
         #[arg(long)]
         poll_index: u32,
@@ -122,6 +148,11 @@ enum Command {
         /// The amount of tokens to lock for the vote (as a decimal in the major token unit)
         #[arg(long)]
         balance: BigDecimal
+    },
+    /// Remove a previously submitted vote.
+    RemoveVote {
+        #[arg(long)]
+        poll_index: u32
     }
     // TODO LeaveGlove, which removes the account from the proxy and also remotes any active votes
 }

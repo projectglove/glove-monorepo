@@ -123,7 +123,7 @@ impl VoteRequest {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoveVoteRequest {
     pub account: AccountId32,
     pub poll_index: u32
