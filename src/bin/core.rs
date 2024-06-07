@@ -108,7 +108,7 @@ pub struct ServiceInfo {
     pub network_url: String
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VoteRequest {
     pub account: AccountId32,
     pub poll_index: u32,

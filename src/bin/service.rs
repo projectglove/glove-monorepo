@@ -214,7 +214,7 @@ async fn poll_count(network: &SubstrateNetwork) -> Result<u32, GloveError> {
         .storage()
         .at_latest().await?
         .fetch(&storage().referenda().referendum_count()).await?
-        .ok_or(subxt::Error::Other("Unable to determine poll count".to_string()).into())
+        .ok_or(subxt::Error::Other("Unable to determine poll count".into()).into())
 }
 
 /// Schedule a background task to mix the votes and submit them on-chain after a delay. Any voting

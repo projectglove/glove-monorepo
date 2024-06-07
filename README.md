@@ -1,3 +1,29 @@
+## Running Glove
+
+First build the project:
+
+```shell
+cargo build --release
+````
+
+Start the Glove service:
+
+```shell
+target/release/service --proxy-secret-phrase=<SECRET PHRASE> --network-url=<URL>
+```
+
+Run with `--help` to see example network endpoints for various chains.
+
+For now the service is hard-coded to listen on `localhost:8080`, which will be fixed.
+
+There is a CLI client for interacting with the Glove service from the command line:
+
+```shell
+target/release/client --help
+```
+
+First join Glove with the `join-glove` command and then vote with `vote`.
+
 ## Regenerating the Substrate metadata
 
 You first need the `subxt-cli` tool installed:
