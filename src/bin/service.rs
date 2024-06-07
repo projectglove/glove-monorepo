@@ -29,6 +29,7 @@ use core::metadata::runtime_types::pallet_conviction_voting::vote::Vote;
 use core::metadata::runtime_types::polkadot_runtime::RuntimeCall;
 use core::metadata::runtime_types::sp_runtime::DispatchError;
 use core::metadata::runtime_types::sp_runtime::ModuleError;
+use core::metadata::storage;
 use core::RemoveVoteRequest;
 use DispatchError::Module;
 use mixing::VoteMixRequest;
@@ -109,8 +110,8 @@ impl GloveState {
     }
 
     async fn get_optional_poll(&self, poll_index: u32) -> Option<Poll> {
-        let map = self.polls.lock().await;
-        map.get(&poll_index).map(|p| p.clone())
+        let polls = self.polls.lock().await;
+        polls.get(&poll_index).map(Poll::clone)
     }
 }
 
@@ -128,27 +129,24 @@ impl Poll {
         }
         let mut poll = self.inner.lock().await;
         poll.requests.insert(vote_request.account.clone(), vote_request);
-        if !poll.pending_mix {
-            poll.pending_mix = true;
-            true
-        } else {
-            false
-        }
+        let initiate_mix = !poll.pending_mix;
+        poll.pending_mix = true;
+        initiate_mix
     }
 
     async fn remove_vote_request(&self, account: AccountId32) -> Option<bool> {
         let mut poll = self.inner.lock().await;
         let _ = poll.requests.remove(&account)?;
-        if !poll.pending_mix {
-            poll.pending_mix = true;
-            Some(true)
-        } else {
-            Some(false)
-        }
+        let initiate_mix = !poll.pending_mix;
+        poll.pending_mix = true;
+        Some(initiate_mix)
     }
 
     async fn begin_mix(&self) -> Vec<VoteRequest> {
         let mut poll = self.inner.lock().await;
+        if !poll.pending_mix {
+            panic!("Mixing is not needed for poll {}", self.index);
+        }
         poll.pending_mix = false;
         poll.requests
             .clone()
@@ -180,6 +178,9 @@ async fn vote(context: State<Arc<GloveContext>>, Json(payload): Json<VoteRequest
     if !is_glove_member(&context.network, payload.account.clone(), context.network.account()).await? {
         return Err(GloveError::NotMember);
     }
+    if poll_index >= poll_count(&context.network).await? {
+        return Err(GloveError::UnknownPoll);
+    }
     let poll = context.state.get_poll(poll_index).await;
     let initiate_mix = poll.add_vote_request(payload).await;
     if initiate_mix {
@@ -206,6 +207,14 @@ async fn remove_vote(context: State<Arc<GloveContext>>, Json(payload): Json<Remo
         schedule_vote_mixing(context.network.clone(), poll);
     }
     Ok(())
+}
+
+async fn poll_count(network: &SubstrateNetwork) -> Result<u32, GloveError> {
+    network.api
+        .storage()
+        .at_latest().await?
+        .fetch(&storage().referenda().referendum_count()).await?
+        .ok_or(subxt::Error::Other("Unable to determine poll count".to_string()).into())
 }
 
 /// Schedule a background task to mix the votes and submit them on-chain after a delay. Any voting
@@ -367,7 +376,9 @@ enum GloveError {
     #[error("Requested votes netted to zero. This is a temporary issue, which will be implemented as obstain votes")]
     NetZeroMixVotes,
     #[error("Account has not voted for this poll")]
-    PollNotVotedFor
+    PollNotVotedFor,
+    #[error("Poll does not exist")]
+    UnknownPoll
     // #[error("Internal server error")]
     // InternalServerError,
 }
@@ -378,6 +389,7 @@ impl IntoResponse for GloveError {
             GloveError::VoteCall(_) => StatusCode::BAD_REQUEST,
             GloveError::NotMember => StatusCode::BAD_REQUEST,
             GloveError::PollNotVotedFor => StatusCode::BAD_REQUEST,
+            GloveError::UnknownPoll => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR
         };
         (status_code, self.to_string()).into_response()
