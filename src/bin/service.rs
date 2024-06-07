@@ -17,6 +17,7 @@ use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, info};
+use tracing::log::warn;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
 use core::{is_glove_member, ServiceInfo, SubstrateNetwork, VoteRequest};
@@ -228,7 +229,9 @@ fn schedule_vote_mixing(network: SubstrateNetwork, poll: Poll) {
         info!("Mixing votes for poll {}:", poll.index);
         poll_requests.iter().for_each(|r| debug!("{:?}", r));
         let result = mix_votes_and_submit_on_chain(&network, poll.index, poll_requests).await;
-        debug!("Vote mixing for poll {} completed with {:?}", poll.index, result);
+        if let Err(e) = result {
+            warn!("Vote mixing for poll {} failed: {:?}", poll.index, e);
+        }
     });
 }
 
