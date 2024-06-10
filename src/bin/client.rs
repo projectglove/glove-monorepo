@@ -22,7 +22,7 @@ use crate::core::{RemoveVoteRequest, VoteRequest};
 mod core;
 
 #[tokio::main]
-async fn main() -> Result<Success> {
+async fn main() -> Result<SuccessOutput> {
     let args = Args::parse();
 
     let http_client = Client::builder().build()?;
@@ -45,20 +45,20 @@ async fn main() -> Result<Success> {
     }
 }
 
-async fn join_glove(service_info: &ServiceInfo, network: &SubstrateNetwork) -> Result<Success> {
+async fn join_glove(service_info: &ServiceInfo, network: &SubstrateNetwork) -> Result<SuccessOutput> {
     if is_glove_member(network, network.account(), service_info.proxy_account.clone()).await? {
-        return Ok(Success::AlreadyGloveMember);
+        return Ok(SuccessOutput::AlreadyGloveMember);
     }
     let add_proxy_call = core::metadata::tx()
         .proxy()
         .add_proxy(account_to_address(service_info.proxy_account.clone()), ProxyType::Governance, 0)
         .unvalidated();
     match network.call_extrinsic(&add_proxy_call).await {
-        Ok(_) => Ok(Success::JoinedGlove),
+        Ok(_) => Ok(SuccessOutput::JoinedGlove),
         Err(Runtime(Module(module_error))) => {
             match module_error.as_root_error::<RuntimeError>() {
                 // Unlikely, but just in case
-                Ok(Proxy(Duplicate)) => Ok(Success::AlreadyGloveMember),
+                Ok(Proxy(Duplicate)) => Ok(SuccessOutput::AlreadyGloveMember),
                 _ => Err(Runtime(Module(module_error)).into())
             }
         },
@@ -73,7 +73,7 @@ async fn vote(
     poll_index: u32,
     aye: bool,
     balance_major_units: BigDecimal
-) -> Result<Success> {
+) -> Result<SuccessOutput> {
     let balance = (balance_major_units * 10u128.pow(network.token_decimals as u32))
         .to_u128()
         .context("Vote balance is too big")?;
@@ -84,7 +84,7 @@ async fn vote(
         .send().await
         .context("Unable to send vote request")?;
     if response.status() == StatusCode::OK {
-        Ok(Success::Voted { nonce: vote_request.nonce })
+        Ok(SuccessOutput::Voted { nonce: vote_request.nonce })
     } else {
         bail!(response.text().await?)
     }
@@ -95,7 +95,7 @@ async fn remove_vote(
     http_client: &Client,
     network: &SubstrateNetwork,
     poll_index: u32
-) -> Result<Success> {
+) -> Result<SuccessOutput> {
     let remove_vote_request = RemoveVoteRequest {
         account: network.account(),
         poll_index
@@ -106,7 +106,7 @@ async fn remove_vote(
         .send().await
         .context("Unable to send remove vote request")?;
     if response.status() == StatusCode::OK {
-        Ok(Success::VoteRemoved)
+        Ok(SuccessOutput::VoteRemoved)
     } else {
         bail!(response.text().await?)
     }
@@ -135,7 +135,7 @@ struct Args {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Add Glove as a goverance proxy to the account. This is a one-time operation.
+    /// Add Glove as a goverance proxy to the account, if it isn't already.
     JoinGlove,
 
     /// Submit vote for inclusion in Glove mixing. The mixing process is not necessarily immediate.
@@ -162,18 +162,18 @@ enum Command {
 }
 
 #[derive(Display, Debug)]
-enum Success {
+enum SuccessOutput {
     #[strum(to_string = "Account has joined Glove proxy")]
     JoinedGlove,
-    #[strum(to_string = "Account already part of Glove proxy")]
+    #[strum(to_string = "Account already a member of Glove proxy")]
     AlreadyGloveMember,
     #[strum(to_string = "Vote successfully submitted ({nonce})")]
     Voted { nonce: u128 },
     #[strum(to_string = "Vote successfully removed")]
-    VoteRemoved
+    VoteRemoved,
 }
 
-impl Termination for Success {
+impl Termination for SuccessOutput {
     fn report(self) -> ExitCode {
         println!("{}", self);
         ExitCode::SUCCESS

@@ -43,7 +43,7 @@ subxt metadata --url="wss://rpc.polkadot.io:443" -f bytes > assets/polkadot-meta
 * Basic implementation as a command line tool where voting requests are input from the command line and stored in-memory,
   and a "mix" command runs through a basic mixing algo and outputs the votes which then submitted on-chain.
 * Signed voting requests. Using SCALE encoding seems to make most sense 
-* Web server (use Rocket?). REST API will have to be something like:
+* Web server. REST API will have to be something like:
   
    ```
    POST /submit-vote
@@ -60,7 +60,6 @@ subxt metadata --url="wss://rpc.polkadot.io:443" -f bytes > assets/polkadot-meta
 * Persist voting requests
 * Restoring state on startup from private store and on-chain
 * When does the mixing occur? Is it configurable?
-* Remove vote request from client
 * Remove on-chain votes due to error conditions detected by the proxy
 * Split votes
 * Abstain votes?
