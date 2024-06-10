@@ -81,13 +81,12 @@ pub async fn is_glove_member(
     let result = network.api.storage().at_latest().await?.fetch(&proxies_query).await?;
     if let Some(proxies) = result {
         let glove_account = core_to_subxt(glove_account);
-        Ok(proxies.0.0.iter().any(|proxy| {
-            let correct_type = match proxy.proxy_type {
-                ProxyType::Any | ProxyType::Governance => true,
-                _ => false
-            };
-            correct_type && proxy.delegate == glove_account
-        }))
+        Ok(
+            proxies.0.0.iter().any(|proxy| {
+                matches!(proxy.proxy_type, ProxyType::Any | ProxyType::Governance) &&
+                    proxy.delegate == glove_account
+            })
+        )
     } else {
         Ok(false)
     }

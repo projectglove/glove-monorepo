@@ -31,6 +31,7 @@ use core::metadata::runtime_types::pallet_conviction_voting::pallet::Call as Con
 use core::metadata::runtime_types::pallet_conviction_voting::vote::AccountVote;
 use core::metadata::runtime_types::pallet_conviction_voting::vote::Vote;
 use core::metadata::runtime_types::pallet_proxy::pallet::Error::NotProxy;
+use core::metadata::runtime_types::pallet_referenda::types::ReferendumInfo;
 use core::metadata::runtime_types::polkadot_runtime::RuntimeCall;
 use core::metadata::runtime_types::polkadot_runtime::RuntimeError;
 use core::metadata::runtime_types::polkadot_runtime::RuntimeError::Proxy;
@@ -39,7 +40,7 @@ use core::metadata::storage;
 use core::RemoveVoteRequest;
 use mixing::VoteMixRequest;
 use ProxyCallError::NotProxyMember;
-use ServiceError::{NotMember, UnknownPoll};
+use ServiceError::{NotMember, PollNotOngoing};
 
 mod mixing;
 mod core;
@@ -196,9 +197,8 @@ async fn vote(
     if !is_glove_member(&context.network, payload.account.clone(), context.network.account()).await? {
         return Err(NotMember);
     }
-    // TODO Change this to reject on poll not ongoing (which should cover non-existent poll)
-    if poll_index >= poll_count(&context.network).await? {
-        return Err(UnknownPoll);
+    if !is_poll_ongoing(&context.network, poll_index).await? {
+        return Err(PollNotOngoing);
     }
     let poll = context.state.get_poll(poll_index).await;
     let initiate_mix = poll.add_vote_request(payload).await;
@@ -242,12 +242,14 @@ async fn remove_vote(
     Ok(())
 }
 
-async fn poll_count(network: &SubstrateNetwork) -> Result<u32, SubxtError> {
-    network.api
-        .storage()
-        .at_latest().await?
-        .fetch(&storage().referenda().referendum_count()).await?
-        .ok_or(SubxtError::Other("Unable to determine poll count".into()))
+async fn is_poll_ongoing(network: &SubstrateNetwork, poll_index: u32) -> Result<bool, SubxtError> {
+    Ok(
+        network.api
+            .storage()
+            .at_latest().await?
+            .fetch(&storage().referenda().referendum_info_for(poll_index).unvalidated()).await?
+            .map_or(false, |info| matches!(info, ReferendumInfo::Ongoing(_)))
+    )
 }
 
 /// Schedule a background task to mix the votes and submit them on-chain after a delay. Any voting
@@ -495,8 +497,8 @@ enum ProxyCallError {
 enum ServiceError {
     #[error("Client is not a member of the Glove proxy")]
     NotMember,
-    #[error("Poll does not exist")]
-    UnknownPoll,
+    #[error("Poll is not ongoing or does not exist")]
+    PollNotOngoing,
     #[error("Proxy call error: {0:?}")]
     Call(#[from] ProxyCallError),
     #[error("Internal Subxt error: {0}")]
@@ -507,7 +509,7 @@ impl IntoResponse for ServiceError {
     fn into_response(self) -> Response {
         match self {
             NotMember => (StatusCode::BAD_REQUEST, self.to_string()),
-            UnknownPoll => (StatusCode::BAD_REQUEST, self.to_string()),
+            PollNotOngoing => (StatusCode::BAD_REQUEST, self.to_string()),
             _ => {
                 warn!("{:?}", self);
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
