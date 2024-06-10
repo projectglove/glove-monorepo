@@ -26,6 +26,7 @@ use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
 use core::{is_glove_member, ServiceInfo, SubstrateNetwork, VoteRequest};
 use core::account_to_address;
+use core::core_to_subxt;
 use core::metadata::proxy::events::ProxyExecuted;
 use core::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
 use core::metadata::runtime_types::pallet_conviction_voting::vote::AccountVote;
@@ -41,6 +42,7 @@ use core::RemoveVoteRequest;
 use mixing::VoteMixRequest;
 use ProxyCallError::NotProxyMember;
 use ServiceError::{NotMember, PollNotOngoing};
+use ServiceError::InsufficientBalance;
 
 mod mixing;
 mod core;
@@ -188,7 +190,6 @@ async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
 }
 
 // TODO Reject for zero balance
-// TODO Reject for insufficient balance
 async fn vote(
     State(context): State<Arc<GloveContext>>,
     Json(payload): Json<VoteRequest>
@@ -199,6 +200,13 @@ async fn vote(
     }
     if !is_poll_ongoing(&context.network, poll_index).await? {
         return Err(PollNotOngoing);
+    }
+    // In a normal poll with multiple votes on both sides, the on-chain vote balance can be
+    // significantly less than the vote request balance. A malicious actor could use this to scew
+    // the poll by passing a balance value much higher than they have, knowing there's a good chance
+    // it won't be fully utilised.
+    if balance(&context.network, payload.account.clone()).await? < payload.balance {
+        return Err(InsufficientBalance);
     }
     let poll = context.state.get_poll(poll_index).await;
     let initiate_mix = poll.add_vote_request(payload).await;
@@ -249,6 +257,16 @@ async fn is_poll_ongoing(network: &SubstrateNetwork, poll_index: u32) -> Result<
             .at_latest().await?
             .fetch(&storage().referenda().referendum_info_for(poll_index).unvalidated()).await?
             .map_or(false, |info| matches!(info, ReferendumInfo::Ongoing(_)))
+    )
+}
+
+async fn balance(network: &SubstrateNetwork, account: AccountId32) -> Result<u128, SubxtError> {
+    Ok(
+        network.api
+            .storage()
+            .at_latest().await?
+            .fetch(&storage().system().account(core_to_subxt(account))).await?
+            .map_or(0, |account| account.data.free)
     )
 }
 
@@ -323,6 +341,9 @@ async fn mix_votes_and_submit_on_chain(
         .collect::<Vec<_>>();
     let Some(mixing_result) = mixing::mix_votes(&mix_requests) else {
         // TODO Vote abstain with a minimum balance.
+        // TODO Should the enclave produce the extrinic calls structs? It would prove the enclave
+        //  intiated the abstain votes. Otherwise, users are trusting the host service is correctly
+        //  interpreting the enclave's None mixing output.
         panic!("Net zero mix votes");
     };
 
@@ -499,6 +520,8 @@ enum ServiceError {
     NotMember,
     #[error("Poll is not ongoing or does not exist")]
     PollNotOngoing,
+    #[error("Insufficient account balance for vote")]
+    InsufficientBalance,
     #[error("Proxy call error: {0:?}")]
     Call(#[from] ProxyCallError),
     #[error("Internal Subxt error: {0}")]
@@ -510,6 +533,7 @@ impl IntoResponse for ServiceError {
         match self {
             NotMember => (StatusCode::BAD_REQUEST, self.to_string()),
             PollNotOngoing => (StatusCode::BAD_REQUEST, self.to_string()),
+            InsufficientBalance => (StatusCode::BAD_REQUEST, self.to_string()),
             _ => {
                 warn!("{:?}", self);
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
