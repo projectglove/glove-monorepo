@@ -11,10 +11,7 @@ use clap::Parser;
 use itertools::Itertools;
 use sp_runtime::AccountId32;
 use subxt::Error as SubxtError;
-use subxt::error::DispatchError as SubxtDispatchError;
-use subxt::Error::Runtime;
 use subxt_signer::sr25519::Keypair;
-use SubxtDispatchError::Module;
 use tokio::net::TcpListener;
 use tokio::spawn;
 use tokio::sync::Mutex;
@@ -30,7 +27,7 @@ use core::BatchError;
 use core::core_to_subxt;
 use core::metadata::proxy::events::ProxyExecuted;
 use core::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
-use core::metadata::runtime_types::pallet_conviction_voting::pallet::Error::{InsufficientFunds, NotOngoing};
+use core::metadata::runtime_types::pallet_conviction_voting::pallet::Error::{InsufficientFunds, NotOngoing, NotVoter};
 use core::metadata::runtime_types::pallet_conviction_voting::vote::AccountVote;
 use core::metadata::runtime_types::pallet_conviction_voting::vote::Vote;
 use core::metadata::runtime_types::pallet_proxy::pallet::Call as ProxyCall;
@@ -43,7 +40,6 @@ use core::metadata::runtime_types::sp_runtime::DispatchError as MetadataDispatch
 use core::metadata::storage;
 use core::RemoveVoteRequest;
 use mixing::VoteMixRequest;
-use ProxyCallError::NotProxyMember;
 use RuntimeError::ConvictionVoting;
 use ServiceError::{NotMember, PollNotOngoing};
 use ServiceError::InsufficientBalance;
@@ -239,10 +235,10 @@ async fn remove_vote(
 
     let remove_result = proxy_remove_vote(network, payload.account, payload.poll_index).await;
     match remove_result {
-        Err(ProxyRemoveVoteError::NotVoter) => return Ok(()),
         // Unlikely since we've just checked above, but just in case
-        Err(ProxyRemoveVoteError::ProxyCall(NotProxyMember)) => return Err(NotMember),
-        Err(ProxyRemoveVoteError::ProxyCall(error)) => return Err(error.into()),
+        Err(ProxyError::Module(_, ConvictionVoting(NotVoter))) => return Ok(()),
+        Err(ProxyError::Batch(BatchError::Module(_, Proxy(NotProxy)))) => return Err(NotMember),
+        Err(error) => return Err(error.into()),
         Ok(_) => {}
     }
 
@@ -303,39 +299,35 @@ async fn mix_votes(context: &GloveContext, poll: &Poll) {
             info!("Vote mixing for poll {} succeeded", poll.index);
             break;
         }
-        let error = result.unwrap_err();
-        let batch_index = match error {
-            ProxyBatchError::Module(_, ConvictionVoting(NotOngoing)) => {
+        match result.unwrap_err() {
+            ProxyError::Module(_, ConvictionVoting(NotOngoing)) => {
                 info!("Poll {} has been detected as no longer ongoing, and so removing it", poll.index);
                 context.state.remove_poll(poll.index).await;
                 break;
             }
-            ProxyBatchError::Module(batch_index, ConvictionVoting(InsufficientFunds)) => {
+            ProxyError::Module(batch_index, ConvictionVoting(InsufficientFunds)) => {
                 warn!("Insufficient funds for {:?}. Removing it from poll and trying again",
                         poll_requests[batch_index]);
                 // TODO On-chain vote needs to be removed as well
                 poll.remove_vote_request(poll_requests[batch_index].account.clone()).await;
                 continue;
             }
-            ProxyBatchError::Batch(BatchError::Module(batch_index, Proxy(NotProxy))) => {
+            ProxyError::Batch(BatchError::Module(batch_index, Proxy(NotProxy))) => {
                 warn!("Account is no longer part of the proxy, removing it from poll and trying again: {:?}",
                         poll_requests[batch_index]);
                 // TODO How to remove on-chain vote if the account is no longer part of the proxy?
                 poll.remove_vote_request(poll_requests[batch_index].account.clone()).await;
                 continue;
             }
-            ProxyBatchError::Module(batch_index, _) => batch_index,
-            ProxyBatchError::Dispatch(batch_index, _) => batch_index,
-            ProxyBatchError::Batch(BatchError::Module(batch_index, _)) => batch_index,
-            ProxyBatchError::Batch(BatchError::Dispatch(ref batch_interrupted)) =>
-                batch_interrupted.index as usize,
-            _ => {
-                warn!("Error mixing votes: {:?}", error);
+            error => {
+                if let Some(batch_index) = error.batch_index() {
+                    warn!("Error mixing votes for {:?}: {:?}", poll_requests[batch_index], error)
+                } else {
+                    warn!("Error mixing votes: {:?}", error)
+                }
                 break;
             }
-        };
-        warn!("Error mixing votes for {:?}: {:?}", poll_requests[batch_index], error);
-        break;
+        }
     }
 }
 
@@ -343,7 +335,7 @@ async fn mix_votes_and_submit_on_chain(
     network: &SubstrateNetwork,
     poll_index: u32,
     poll_requests: &Vec<VoteRequest>
-) -> Result<(), ProxyBatchError> {
+) -> Result<(), ProxyError> {
     info!("Mixing votes for poll {}:", poll_index);
     // Convert to VoteMixRequests
     let mix_requests = poll_requests
@@ -362,15 +354,6 @@ async fn mix_votes_and_submit_on_chain(
     };
 
     debug!("Mixing result: {:?}", mixing_result);
-
-    // We can't use `batchAll` to submit the votes atomically, because it doesn't work with the
-    // `proxy` extrinsic. `proxy` doesn't propagate any errors from the proxied call (it captures
-    // the error in a ProxyExecuted event), and so `batchAll` doesn't receive any errors to
-    // terminate the batch.
-    //
-    // Even if that did work, there is another issue with `batchAll` if there are multiple calls of
-    // the same extrinsic in the batch - there's no way of knowing which of them failed. The
-    // `ItemCompleted` events can't be issued, since they're rolled back in light of the error.
 
     let proxy_vote_calls = poll_requests
         .iter()
@@ -395,7 +378,36 @@ async fn mix_votes_and_submit_on_chain(
     Ok(batch_proxy_calls(network, proxy_vote_calls).await?)
 }
 
-async fn batch_proxy_calls(network: &SubstrateNetwork, proxy_calls: Vec<ProxyCall>) -> Result<(), ProxyBatchError> {
+async fn proxy_remove_vote(
+    network: &SubstrateNetwork,
+    account: AccountId32,
+    poll_index: u32
+) -> Result<(), ProxyError> {
+    Ok(
+        // This doesn't need to be a batch call, but using `batch_proxy_calls` lets us reuse the
+        // error handling.
+        batch_proxy_calls(
+            network,
+            vec![ProxyCall::proxy {
+                real: account_to_address(account),
+                force_proxy_type: None,
+                call: Box::new(RuntimeCall::ConvictionVoting(ConvictionVotingCall::remove_vote {
+                    class: None,
+                    index: poll_index
+                })),
+            }]
+        ).await?
+    )
+}
+
+// We can't use `batchAll` to submit the votes atomically, because it doesn't work with the `proxy`
+// extrinsic. `proxy` doesn't propagate any errors from the proxied call (it captures the error in a
+// ProxyExecuted event), and so `batchAll` doesn't receive any errors to terminate the batch.
+//
+// Even if that did work, there is another issue with `batchAll` if there are multiple calls of the
+// same extrinsic in the batch - there's no way of knowing which of them failed. The `ItemCompleted`
+// events can't be issued, since they're rolled back in light of the error.
+async fn batch_proxy_calls(network: &SubstrateNetwork, proxy_calls: Vec<ProxyCall>) -> Result<(), ProxyError> {
     let proxy_calls = proxy_calls.into_iter().map(RuntimeCall::Proxy).collect::<Vec<_>>();
     let events = network.batch(proxy_calls).await?;
     // Find the first proxy call which failed, if any
@@ -405,8 +417,8 @@ async fn batch_proxy_calls(network: &SubstrateNetwork, proxy_calls: Vec<ProxyCal
                 return network
                     .extract_runtime_error(&dispatch_error)
                     .map_or_else(
-                        || Err(ProxyBatchError::Dispatch(batch_index, dispatch_error)),
-                        |runtime_error| Err(ProxyBatchError::Module(batch_index, runtime_error))
+                        || Err(ProxyError::Dispatch(batch_index, dispatch_error)),
+                        |runtime_error| Err(ProxyError::Module(batch_index, runtime_error))
                     );
             }
             Ok(ProxyExecuted { result: Ok(_) }) => continue,
@@ -417,7 +429,7 @@ async fn batch_proxy_calls(network: &SubstrateNetwork, proxy_calls: Vec<ProxyCal
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum ProxyBatchError {
+pub enum ProxyError {
     #[error("Module error from batch index {0}: {1:?}")]
     Module(usize, RuntimeError),
     #[error("Dispatch error from batch index {0}: {1:?}")]
@@ -428,100 +440,17 @@ pub enum ProxyBatchError {
     Subxt(#[from] SubxtError)
 }
 
-async fn proxy_remove_vote(
-    network: &SubstrateNetwork,
-    account: AccountId32,
-    poll_index: u32
-) -> Result<(), ProxyRemoveVoteError> {
-    let call = ConvictionVotingCall::remove_vote { class: None, index: poll_index };
-    let proxy_result = proxy_call(network, account, RuntimeCall::ConvictionVoting(call)).await;
-    if let Err(error) = proxy_result {
-        if let ProxyCallError::ProxiedCall(voting_error) = &error {
-            let voting_error = voting_error.as_str();
-            if voting_error == "NotVoter" {
-                return Err(ProxyRemoveVoteError::NotVoter);
-            }
+impl ProxyError {
+    fn batch_index(&self) -> Option<usize> {
+        match self {
+            ProxyError::Module(batch_index, _) => Some(*batch_index),
+            ProxyError::Dispatch(batch_index, _) => Some(*batch_index),
+            ProxyError::Batch(BatchError::Module(batch_index, _)) => Some(*batch_index),
+            ProxyError::Batch(BatchError::Dispatch(batch_interrupted)) =>
+                Some(batch_interrupted.index as usize),
+            _ => None
         }
-        Err(ProxyRemoveVoteError::ProxyCall(error))
-    } else {
-        Ok(())
     }
-}
-
-#[derive(thiserror::Error, Debug)]
-enum ProxyRemoveVoteError {
-    #[error("The given account did not vote on the poll")]
-    NotVoter,
-    #[error("Proxy call error: {0}")]
-    ProxyCall(#[from] ProxyCallError)
-}
-
-async fn proxy_call(
-    network: &SubstrateNetwork,
-    real_account: AccountId32,
-    call: RuntimeCall
-) -> Result<(), ProxyCallError> {
-    debug!("Proxy call {:?} on behalf of {}", call, real_account);
-
-    // Extract the pallet name from the call variant. This is to be used later if there is an error
-    // from the pallet.
-    let pallet_name = format!("{:?}", call).split('(').next().map(|s| s.to_string());
-
-    let proxy_payload = core::metadata::tx()
-        .proxy()
-        .proxy(account_to_address(real_account), None, call)
-        .unvalidated();  // For some reason the hash of the proxy call doesn't match
-
-    let proxy_executed = match network.call_extrinsic(&proxy_payload).await {
-        Ok(events) => events.find_first::<ProxyExecuted>()?,
-        Err(subxt_error) => {
-            if let Runtime(Module(module_error)) = &subxt_error {
-                if let Ok(Proxy(NotProxy)) = module_error.as_root_error::<RuntimeError>() {
-                    return Err(NotProxyMember);
-                }
-            };
-            return Err(subxt_error.into())
-        }
-    };
-
-    // The proxy extrinsic is a success even if the proxied call itself fails. This error is 
-    // captured in the ProxyExecuted event.
-    let Some(ProxyExecuted { result: Err(dispatch_error) }) = proxy_executed else {
-        // This also treats the absence of the ProxyExecuted event as a success, which is similar
-        // to what TxInBlock::wait_for_success does
-        return Ok(());
-    };
-
-    let MetadataDispatchError::Module(module_error) = &dispatch_error else {
-        return Err(ProxyCallError::Dispatch(dispatch_error));
-    };
-
-    // Check if the module error is coming from the proxied pallet and return the error variant name
-    pallet_name
-        .and_then(|pallet_name| {
-            network.api
-                .metadata()
-                .pallet_by_name(pallet_name.as_str())
-                .filter(|p| p.index() == module_error.index)
-                .and_then(|p| p.error_variant_by_index(module_error.error[0]))
-                .map(|error_variant| error_variant.name.clone())
-        })
-        .map_or_else(
-            || Err(ProxyCallError::Dispatch(dispatch_error)),
-            |error_variant| Err(ProxyCallError::ProxiedCall(error_variant))
-        )
-}
-
-#[derive(thiserror::Error, Debug)]
-enum ProxyCallError {
-    #[error("Account is not a member of the proxy")]
-    NotProxyMember,
-    #[error("Error variant from proxied call: {0}")]
-    ProxiedCall(String),
-    #[error("Problem with proxy call dispatch: {0:?}")]
-    Dispatch(MetadataDispatchError),
-    #[error("Internal Subxt error: {0}")]
-    Subxt(#[from] SubxtError),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -532,8 +461,8 @@ enum ServiceError {
     PollNotOngoing,
     #[error("Insufficient account balance for vote")]
     InsufficientBalance,
-    #[error("Proxy call error: {0:?}")]
-    Call(#[from] ProxyCallError),
+    #[error("Proxy error: {0}")]
+    Proxy(#[from] ProxyError),
     #[error("Internal Subxt error: {0}")]
     Subxt(#[from] SubxtError),
 }
