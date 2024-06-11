@@ -5,6 +5,7 @@ description = "Project Glove"
 edition = "2021"
 
 [workspace]
+members = [ "common", "enclave", "client" ]
 
 [dependencies]
 common = { path = "common" }
