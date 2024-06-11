@@ -12,6 +12,7 @@ use subxt_signer::sr25519::Keypair;
 
 use core::{account_to_address, is_glove_member};
 use core::metadata::runtime_types::pallet_proxy::pallet::Error::Duplicate;
+use core::metadata::runtime_types::pallet_proxy::pallet::Error::NotFound;
 use core::metadata::runtime_types::polkadot_runtime::{ProxyType, RuntimeError};
 use core::ServiceInfo;
 use core::SubstrateNetwork;
@@ -41,7 +42,8 @@ async fn main() -> Result<SuccessOutput> {
         Command::Vote { poll_index, aye, balance } =>
             vote(&args.glove_url, &http_client, &network, poll_index, aye, balance).await,
         Command::RemoveVote { poll_index } =>
-            remove_vote(&args.glove_url, &http_client, &network, poll_index).await
+            remove_vote(&args.glove_url, &http_client, &network, poll_index).await,
+        Command::LeaveGlove => leave_glove(&service_info, &network).await
     }
 }
 
@@ -112,6 +114,27 @@ async fn remove_vote(
     }
 }
 
+async fn leave_glove(service_info: &ServiceInfo, network: &SubstrateNetwork) -> Result<SuccessOutput> {
+    if !is_glove_member(network, network.account(), service_info.proxy_account.clone()).await? {
+        return Ok(SuccessOutput::NotGloveMember);
+    }
+    let add_proxy_call = core::metadata::tx()
+        .proxy()
+        .remove_proxy(account_to_address(service_info.proxy_account.clone()), ProxyType::Governance, 0)
+        .unvalidated();
+    match network.call_extrinsic(&add_proxy_call).await {
+        Ok(_) => Ok(SuccessOutput::LeftGlove),
+        Err(Runtime(Module(module_error))) => {
+            match module_error.as_root_error::<RuntimeError>() {
+                // Unlikely, but just in case
+                Ok(Proxy(NotFound)) => Ok(SuccessOutput::NotGloveMember),
+                _ => Err(Runtime(Module(module_error)).into())
+            }
+        },
+        Err(e) => Err(e.into())
+    }
+}
+
 fn url_with_path(url: &Url, path: &str) -> Url {
     let mut with_path = url.clone();
     with_path.set_path(path);
@@ -155,10 +178,11 @@ enum Command {
     RemoveVote {
         #[arg(long)]
         poll_index: u32
-    }
+    },
 
-    // TODO LeaveGlove, which removes the account from the proxy and also remotes any active votes,
-    //  which requires a remove-all-votes request
+    // TODO Also remove any active votes, which requires a remove-all-votes request?
+    /// Remove the account from the Glove proxy.
+    LeaveGlove
 }
 
 #[derive(Display, Debug)]
@@ -171,6 +195,10 @@ enum SuccessOutput {
     Voted { nonce: u128 },
     #[strum(to_string = "Vote successfully removed")]
     VoteRemoved,
+    #[strum(to_string = "Account has left Glove proxy")]
+    LeftGlove,
+    #[strum(to_string = "Account was not a Glove proxy member")]
+    NotGloveMember,
 }
 
 impl Termination for SuccessOutput {

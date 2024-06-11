@@ -26,11 +26,14 @@ use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
 use core::{is_glove_member, ServiceInfo, SubstrateNetwork, VoteRequest};
 use core::account_to_address;
+use core::BatchError;
 use core::core_to_subxt;
 use core::metadata::proxy::events::ProxyExecuted;
 use core::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
+use core::metadata::runtime_types::pallet_conviction_voting::pallet::Error::{InsufficientFunds, NotOngoing};
 use core::metadata::runtime_types::pallet_conviction_voting::vote::AccountVote;
 use core::metadata::runtime_types::pallet_conviction_voting::vote::Vote;
+use core::metadata::runtime_types::pallet_proxy::pallet::Call as ProxyCall;
 use core::metadata::runtime_types::pallet_proxy::pallet::Error::NotProxy;
 use core::metadata::runtime_types::pallet_referenda::types::ReferendumInfo;
 use core::metadata::runtime_types::polkadot_runtime::RuntimeCall;
@@ -41,6 +44,7 @@ use core::metadata::storage;
 use core::RemoveVoteRequest;
 use mixing::VoteMixRequest;
 use ProxyCallError::NotProxyMember;
+use RuntimeError::ConvictionVoting;
 use ServiceError::{NotMember, PollNotOngoing};
 use ServiceError::InsufficientBalance;
 
@@ -205,7 +209,7 @@ async fn vote(
     // significantly less than the vote request balance. A malicious actor could use this to scew
     // the poll by passing a balance value much higher than they have, knowing there's a good chance
     // it won't be fully utilised.
-    if balance(&context.network, payload.account.clone()).await? < payload.balance {
+    if account_balance(&context.network, payload.account.clone()).await? < payload.balance {
         return Err(InsufficientBalance);
     }
     let poll = context.state.get_poll(poll_index).await;
@@ -260,7 +264,7 @@ async fn is_poll_ongoing(network: &SubstrateNetwork, poll_index: u32) -> Result<
     )
 }
 
-async fn balance(network: &SubstrateNetwork, account: AccountId32) -> Result<u128, SubxtError> {
+async fn account_balance(network: &SubstrateNetwork, account: AccountId32) -> Result<u128, SubxtError> {
     Ok(
         network.api
             .storage()
@@ -288,40 +292,50 @@ async fn mix_votes(context: &GloveContext, poll: &Poll) {
     loop {
         let Some(poll_requests) = poll.begin_mix().await else {
             // Another task has already started mixing the votes
-            return;
+            break;
         };
         if poll_requests.is_empty() {
             info!("No votes to mix for poll {}", poll.index);
-            return;
+            break;
         }
         let result = mix_votes_and_submit_on_chain(&context.network, poll.index, &poll_requests).await;
-        if let Err((request_index, error)) = result {
-            match error {
-                ProxyVoteError::NotOngoing => {
-                    info!("Poll {} has been detected as no longer ongoing, and so removing it", poll.index);
-                    context.state.remove_poll(poll.index).await;
-                    return;
-                }
-                // For these errors, retry with the request removed
-                // TODO On-chain vote needs to be removed as well
-                ProxyVoteError::InsufficientFunds => {}
-                ProxyVoteError::MaxVotesReached => {}
-                // TODO How to remove on-chain vote if the account is no longer part of the proxy?
-                ProxyVoteError::ProxyCall(NotProxyMember) => {}
-                _ => {
-                    warn!("Error mixing votes for {:?}: {:?}", poll_requests[request_index], error);
-                    return;
-                }
-            }
-            warn!(
-                "{:?} failed with error {:?}. Removing it from poll and trying again",
-                poll_requests[request_index], error
-            );
-            poll.remove_vote_request(poll_requests[request_index].account.clone()).await;
-        } else {
+        if result.is_ok() {
             info!("Vote mixing for poll {} succeeded", poll.index);
-            return;
+            break;
         }
+        let error = result.unwrap_err();
+        let batch_index = match error {
+            ProxyBatchError::Module(_, ConvictionVoting(NotOngoing)) => {
+                info!("Poll {} has been detected as no longer ongoing, and so removing it", poll.index);
+                context.state.remove_poll(poll.index).await;
+                break;
+            }
+            ProxyBatchError::Module(batch_index, ConvictionVoting(InsufficientFunds)) => {
+                warn!("Insufficient funds for {:?}. Removing it from poll and trying again",
+                        poll_requests[batch_index]);
+                // TODO On-chain vote needs to be removed as well
+                poll.remove_vote_request(poll_requests[batch_index].account.clone()).await;
+                continue;
+            }
+            ProxyBatchError::Batch(BatchError::Module(batch_index, Proxy(NotProxy))) => {
+                warn!("Account is no longer part of the proxy, removing it from poll and trying again: {:?}",
+                        poll_requests[batch_index]);
+                // TODO How to remove on-chain vote if the account is no longer part of the proxy?
+                poll.remove_vote_request(poll_requests[batch_index].account.clone()).await;
+                continue;
+            }
+            ProxyBatchError::Module(batch_index, _) => batch_index,
+            ProxyBatchError::Dispatch(batch_index, _) => batch_index,
+            ProxyBatchError::Batch(BatchError::Module(batch_index, _)) => batch_index,
+            ProxyBatchError::Batch(BatchError::Dispatch(ref batch_interrupted)) =>
+                batch_interrupted.index as usize,
+            _ => {
+                warn!("Error mixing votes: {:?}", error);
+                break;
+            }
+        };
+        warn!("Error mixing votes for {:?}: {:?}", poll_requests[batch_index], error);
+        break;
     }
 }
 
@@ -329,7 +343,7 @@ async fn mix_votes_and_submit_on_chain(
     network: &SubstrateNetwork,
     poll_index: u32,
     poll_requests: &Vec<VoteRequest>
-) -> Result<(), (usize, ProxyVoteError)> {
+) -> Result<(), ProxyBatchError> {
     info!("Mixing votes for poll {}:", poll_index);
     // Convert to VoteMixRequests
     let mix_requests = poll_requests
@@ -357,65 +371,61 @@ async fn mix_votes_and_submit_on_chain(
     // Even if that did work, there is another issue with `batchAll` if there are multiple calls of
     // the same extrinsic in the batch - there's no way of knowing which of them failed. The
     // `ItemCompleted` events can't be issued, since they're rolled back in light of the error.
-    for (index, request) in poll_requests.into_iter().enumerate() {
-        // TODO Deal with mixed_balance of zero
-        // TODO conviction multiplier
-        if let Err(error) = proxy_vote(
-            network,
-            request.account.clone(),
-            poll_index,
-            mixing_result.aye,
-            mixing_result.balances[index]
-        ).await {
-            return Err((index, error));
+
+    let proxy_vote_calls = poll_requests
+        .iter()
+        .zip(mixing_result.balances)
+        .map(|(request, mix_balance)| {
+            ProxyCall::proxy {
+                real: account_to_address(request.account.clone()),
+                force_proxy_type: None,
+                call: Box::new(RuntimeCall::ConvictionVoting(ConvictionVotingCall::vote {
+                    poll_index,
+                    vote: AccountVote::Standard {
+                        // TODO Deal with mixed_balance of zero
+                        // TODO conviction multiplier
+                        vote: Vote(if mixing_result.aye { AYE } else { NAY }),
+                        balance: mix_balance
+                    }
+                })),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Ok(batch_proxy_calls(network, proxy_vote_calls).await?)
+}
+
+async fn batch_proxy_calls(network: &SubstrateNetwork, proxy_calls: Vec<ProxyCall>) -> Result<(), ProxyBatchError> {
+    let proxy_calls = proxy_calls.into_iter().map(RuntimeCall::Proxy).collect::<Vec<_>>();
+    let events = network.batch(proxy_calls).await?;
+    // Find the first proxy call which failed, if any
+    for (batch_index, proxy_executed) in events.find::<ProxyExecuted>().enumerate() {
+        match proxy_executed {
+            Ok(ProxyExecuted { result: Err(dispatch_error) }) => {
+                return network
+                    .extract_runtime_error(&dispatch_error)
+                    .map_or_else(
+                        || Err(ProxyBatchError::Dispatch(batch_index, dispatch_error)),
+                        |runtime_error| Err(ProxyBatchError::Module(batch_index, runtime_error))
+                    );
+            }
+            Ok(ProxyExecuted { result: Ok(_) }) => continue,
+            Err(error) => return Err(error.into())
         }
     }
-
     Ok(())
 }
 
-async fn proxy_vote(
-    network: &SubstrateNetwork,
-    account: AccountId32,
-    poll_index: u32,
-    aye: bool,
-    balance: u128
-) -> Result<(), ProxyVoteError> {
-    let vote_call = ConvictionVotingCall::vote {
-        poll_index,
-        vote: AccountVote::Standard {
-            vote: Vote(if aye { AYE } else { NAY }),
-            balance
-        }
-    };
-    let proxy_result = proxy_call(network, account, RuntimeCall::ConvictionVoting(vote_call)).await;
-    if let Err(error) = proxy_result {
-        if let ProxyCallError::ProxiedCall(voting_error) = &error {
-            let voting_error = voting_error.as_str();
-            if voting_error == "InsufficientFunds" {
-                return Err(ProxyVoteError::InsufficientFunds);
-            } else if voting_error == "NotOngoing" {
-                return Err(ProxyVoteError::NotOngoing);
-            } else if voting_error == "MaxVotesReached" {
-                return Err(ProxyVoteError::MaxVotesReached);
-            }
-        }
-        Err(ProxyVoteError::ProxyCall(error))
-    } else {
-        Ok(())
-    }
-}
-
 #[derive(thiserror::Error, Debug)]
-enum ProxyVoteError {
-    #[error("Too high a balance was provided that the account cannot afford")]
-    InsufficientFunds,
-    #[error("Poll is not ongoing")]
-    NotOngoing,
-    #[error("Maximum number of votes for account reached")]
-    MaxVotesReached,
-    #[error("Proxy call error: {0}")]
-    ProxyCall(#[from] ProxyCallError)
+pub enum ProxyBatchError {
+    #[error("Module error from batch index {0}: {1:?}")]
+    Module(usize, RuntimeError),
+    #[error("Dispatch error from batch index {0}: {1:?}")]
+    Dispatch(usize, MetadataDispatchError),
+    #[error("Batch error: {0}")]
+    Batch(#[from] BatchError),
+    #[error("Internal Subxt error: {0}")]
+    Subxt(#[from] SubxtError)
 }
 
 async fn proxy_remove_vote(

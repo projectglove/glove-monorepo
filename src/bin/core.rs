@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::str::FromStr;
 
 use anyhow::{Context, Result};
@@ -7,6 +8,7 @@ use sp_core::crypto::{AccountId32, Ss58Codec};
 use ss58_registry::{Ss58AddressFormat, Ss58AddressFormatRegistry, Token};
 use subxt::blocks::ExtrinsicEvents;
 use subxt::Error as SubxtError;
+use subxt::ext::scale_decode::DecodeAsType;
 use subxt::OnlineClient;
 use subxt::utils::AccountId32 as SubxtAccountId32;
 use subxt_core::config::PolkadotConfig;
@@ -16,6 +18,10 @@ use subxt_signer::SecretUri;
 use subxt_signer::sr25519::Keypair;
 
 use metadata::runtime_types::polkadot_runtime::ProxyType;
+use metadata::runtime_types::polkadot_runtime::RuntimeCall;
+use metadata::runtime_types::polkadot_runtime::RuntimeError;
+use metadata::runtime_types::sp_runtime::DispatchError;
+use metadata::utility::events::BatchInterrupted;
 
 #[subxt::subxt(runtime_metadata_path = "assets/polkadot-metadata.scale")]
 pub mod metadata {}
@@ -64,9 +70,55 @@ impl SubstrateNetwork {
         )
     }
 
+    pub async fn batch(&self, calls: Vec<RuntimeCall>) -> Result<ExtrinsicEvents<PolkadotConfig>, BatchError> {
+        let payload = metadata::tx().utility().batch(calls).unvalidated();
+        let events = self.call_extrinsic(&payload).await?;
+        if let Some(batch_interrupted) = events.find_first::<BatchInterrupted>()? {
+            if let Some(runtime_error) = self.extract_runtime_error(&batch_interrupted.error) {
+                return Err(BatchError::Module(batch_interrupted.index as usize, runtime_error));
+            }
+            return Err(BatchError::Dispatch(batch_interrupted));
+        }
+        Ok(events)
+    }
+
+    /// This is the equivalent of [subxt::error::DispatchError::decode_from] followed by
+    /// [subxt::error::ModuleError::as_root_error], but for the `DispatchError` type from the
+    /// metadata.
+    pub fn extract_runtime_error(&self, error: &DispatchError) -> Option<RuntimeError> {
+        if let DispatchError::Module(module_error) = error {
+            let bytes = [
+                module_error.index,
+                module_error.error[0],
+                module_error.error[1],
+                module_error.error[2],
+                module_error.error[3]
+            ];
+            let metadata = self.api.metadata();
+            // Taken from ModuleError::as_root_error
+            RuntimeError::decode_as_type(
+                &mut &bytes[..],
+                metadata.outer_enums().error_enum_ty(),
+                metadata.types(),
+            ).ok()
+        } else {
+            None
+        }
+    }
+
     pub fn account_string(&self, account: &AccountId32) -> String {
         account.to_ss58check_with_version(self.ss58_format)
     }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum BatchError {
+    #[error("Module error from batch index {0}: {1:?}")]
+    Module(usize, RuntimeError),
+    #[error("Batch of calls did not complete: {0:?}")]
+    Dispatch(BatchInterrupted),
+    #[error("Internal Subxt error: {0}")]
+    Subxt(#[from] SubxtError),
 }
 
 pub async fn is_glove_member(
