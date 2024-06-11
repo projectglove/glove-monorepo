@@ -1,0 +1,15 @@
+[package]
+name = "common"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.86"
+rand = { version = "0.8.5", features = [] }
+sp-core = "33.0.1"
+ss58-registry = "1.47.0"
+subxt = "0.37.0"
+subxt-core = { version = "0.37.0", features = ["substrate-compat"] }
+subxt-signer = { version = "0.37.0", features = ["subxt"] }
+thiserror = "1.0.61"
+serde = { version = "1.0.203", features = ["derive"] }

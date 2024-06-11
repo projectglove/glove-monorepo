@@ -23,7 +23,7 @@ use metadata::runtime_types::polkadot_runtime::RuntimeError;
 use metadata::runtime_types::sp_runtime::DispatchError;
 use metadata::utility::events::BatchInterrupted;
 
-#[subxt::subxt(runtime_metadata_path = "assets/polkadot-metadata.scale")]
+#[subxt::subxt(runtime_metadata_path = "../assets/polkadot-metadata.scale")]
 pub mod metadata {}
 
 pub fn parse_secret_phrase(str: &str) -> Result<Keypair> {
@@ -82,7 +82,7 @@ impl SubstrateNetwork {
         Ok(events)
     }
 
-    /// This is the equivalent of [subxt::error::DispatchError::decode_from] followed by
+    /// This is the equivalent to calling [subxt::error::DispatchError::decode_from] followed by
     /// [subxt::error::ModuleError::as_root_error], but for the `DispatchError` type from the
     /// metadata.
     pub fn extract_runtime_error(&self, error: &DispatchError) -> Option<RuntimeError> {

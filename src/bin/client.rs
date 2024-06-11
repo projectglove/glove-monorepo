@@ -10,17 +10,14 @@ use subxt::error::DispatchError;
 use subxt::Error::Runtime;
 use subxt_signer::sr25519::Keypair;
 
-use core::{account_to_address, is_glove_member};
-use core::metadata::runtime_types::pallet_proxy::pallet::Error::Duplicate;
-use core::metadata::runtime_types::pallet_proxy::pallet::Error::NotFound;
-use core::metadata::runtime_types::polkadot_runtime::{ProxyType, RuntimeError};
-use core::ServiceInfo;
-use core::SubstrateNetwork;
+use common::{account_to_address, is_glove_member};
+use common::{RemoveVoteRequest, VoteRequest};
+use common::metadata::runtime_types::pallet_proxy::pallet::Error::Duplicate;
+use common::metadata::runtime_types::pallet_proxy::pallet::Error::NotFound;
+use common::metadata::runtime_types::polkadot_runtime::{ProxyType, RuntimeError};
+use common::ServiceInfo;
+use common::SubstrateNetwork;
 use RuntimeError::Proxy;
-
-use crate::core::{RemoveVoteRequest, VoteRequest};
-
-mod core;
 
 #[tokio::main]
 async fn main() -> Result<SuccessOutput> {
@@ -51,7 +48,7 @@ async fn join_glove(service_info: &ServiceInfo, network: &SubstrateNetwork) -> R
     if is_glove_member(network, network.account(), service_info.proxy_account.clone()).await? {
         return Ok(SuccessOutput::AlreadyGloveMember);
     }
-    let add_proxy_call = core::metadata::tx()
+    let add_proxy_call = common::metadata::tx()
         .proxy()
         .add_proxy(account_to_address(service_info.proxy_account.clone()), ProxyType::Governance, 0)
         .unvalidated();
@@ -118,7 +115,7 @@ async fn leave_glove(service_info: &ServiceInfo, network: &SubstrateNetwork) -> 
     if !is_glove_member(network, network.account(), service_info.proxy_account.clone()).await? {
         return Ok(SuccessOutput::NotGloveMember);
     }
-    let add_proxy_call = core::metadata::tx()
+    let add_proxy_call = common::metadata::tx()
         .proxy()
         .remove_proxy(account_to_address(service_info.proxy_account.clone()), ProxyType::Governance, 0)
         .unvalidated();
@@ -145,7 +142,7 @@ fn url_with_path(url: &Url, path: &str) -> Url {
 #[command(version, about = "Glove CLI client")]
 struct Args {
     /// Secret phrase for the Glove client account
-    #[arg(long, value_parser = core::parse_secret_phrase)]
+    #[arg(long, value_parser = common::parse_secret_phrase)]
     secret_phrase: Keypair,
 
     /// The URL of the Glove service

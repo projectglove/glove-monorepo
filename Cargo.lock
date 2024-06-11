@@ -881,6 +881,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b6a852b24ab71dffc585bcb46eaf7959d175cb865a7152e35b348d1b2960422"
 
 [[package]]
+name = "common"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rand",
+ "serde",
+ "sp-core 33.0.1",
+ "ss58-registry",
+ "subxt",
+ "subxt-core",
+ "subxt-signer",
+ "thiserror",
+]
+
+[[package]]
 name = "common-path"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1745,6 +1760,7 @@ dependencies = [
  "axum-macros",
  "bigdecimal",
  "clap",
+ "common",
  "futures",
  "itertools 0.13.0",
  "parity-scale-codec",

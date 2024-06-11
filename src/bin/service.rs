@@ -21,31 +21,30 @@ use tracing::{debug, info};
 use tracing::log::warn;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
-use core::{is_glove_member, ServiceInfo, SubstrateNetwork, VoteRequest};
-use core::account_to_address;
-use core::BatchError;
-use core::core_to_subxt;
-use core::metadata::proxy::events::ProxyExecuted;
-use core::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
-use core::metadata::runtime_types::pallet_conviction_voting::pallet::Error::{InsufficientFunds, NotOngoing, NotVoter};
-use core::metadata::runtime_types::pallet_conviction_voting::vote::AccountVote;
-use core::metadata::runtime_types::pallet_conviction_voting::vote::Vote;
-use core::metadata::runtime_types::pallet_proxy::pallet::Call as ProxyCall;
-use core::metadata::runtime_types::pallet_proxy::pallet::Error::NotProxy;
-use core::metadata::runtime_types::pallet_referenda::types::ReferendumInfo;
-use core::metadata::runtime_types::polkadot_runtime::RuntimeCall;
-use core::metadata::runtime_types::polkadot_runtime::RuntimeError;
-use core::metadata::runtime_types::polkadot_runtime::RuntimeError::Proxy;
-use core::metadata::runtime_types::sp_runtime::DispatchError as MetadataDispatchError;
-use core::metadata::storage;
-use core::RemoveVoteRequest;
+use common::{is_glove_member, ServiceInfo, SubstrateNetwork, VoteRequest};
+use common::account_to_address;
+use common::BatchError;
+use common::core_to_subxt;
+use common::metadata::proxy::events::ProxyExecuted;
+use common::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
+use common::metadata::runtime_types::pallet_conviction_voting::pallet::Error::{InsufficientFunds, NotOngoing, NotVoter};
+use common::metadata::runtime_types::pallet_conviction_voting::vote::AccountVote;
+use common::metadata::runtime_types::pallet_conviction_voting::vote::Vote;
+use common::metadata::runtime_types::pallet_proxy::pallet::Call as ProxyCall;
+use common::metadata::runtime_types::pallet_proxy::pallet::Error::NotProxy;
+use common::metadata::runtime_types::pallet_referenda::types::ReferendumInfo;
+use common::metadata::runtime_types::polkadot_runtime::RuntimeCall;
+use common::metadata::runtime_types::polkadot_runtime::RuntimeError;
+use common::metadata::runtime_types::polkadot_runtime::RuntimeError::Proxy;
+use common::metadata::runtime_types::sp_runtime::DispatchError as MetadataDispatchError;
+use common::metadata::storage;
+use common::RemoveVoteRequest;
 use mixing::VoteMixRequest;
 use RuntimeError::ConvictionVoting;
 use ServiceError::{NotMember, PollNotOngoing};
 use ServiceError::InsufficientBalance;
 
 mod mixing;
-mod core;
 
 const AYE: u8 = 128;
 const NAY: u8 = 0;
@@ -54,7 +53,7 @@ const NAY: u8 = 0;
 #[command(version, about = "Glove proxy service")]
 struct Args {
     /// Secret phrase for the Glove proxy account
-    #[arg(long, value_parser = core::parse_secret_phrase)]
+    #[arg(long, value_parser = common::parse_secret_phrase)]
     proxy_secret_phrase: Keypair,
 
     /// URL for the network endpoint.
@@ -190,6 +189,7 @@ async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
 }
 
 // TODO Reject for zero balance
+// TODO Reject if new vote request reaches max batch size limit for poll
 async fn vote(
     State(context): State<Arc<GloveContext>>,
     Json(payload): Json<VoteRequest>
@@ -407,7 +407,10 @@ async fn proxy_remove_vote(
 // Even if that did work, there is another issue with `batchAll` if there are multiple calls of the
 // same extrinsic in the batch - there's no way of knowing which of them failed. The `ItemCompleted`
 // events can't be issued, since they're rolled back in light of the error.
-async fn batch_proxy_calls(network: &SubstrateNetwork, proxy_calls: Vec<ProxyCall>) -> Result<(), ProxyError> {
+async fn batch_proxy_calls(
+    network: &SubstrateNetwork,
+    proxy_calls: Vec<ProxyCall>
+) -> Result<(), ProxyError> {
     let proxy_calls = proxy_calls.into_iter().map(RuntimeCall::Proxy).collect::<Vec<_>>();
     let events = network.batch(proxy_calls).await?;
     // Find the first proxy call which failed, if any

@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Project Glove"
 edition = "2021"
 
+[workspace]
+
 [dependencies]
+common = { path = "common" }
 anyhow = "1.0.86"
 axum = "0.7.5"
 bigdecimal = "0.4.3"
