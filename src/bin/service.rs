@@ -39,12 +39,10 @@ use common::metadata::runtime_types::polkadot_runtime::RuntimeError::Proxy;
 use common::metadata::runtime_types::sp_runtime::DispatchError as MetadataDispatchError;
 use common::metadata::storage;
 use common::RemoveVoteRequest;
-use mixing::VoteMixRequest;
+use enclave::VoteMixRequest;
 use RuntimeError::ConvictionVoting;
 use ServiceError::{NotMember, PollNotOngoing};
 use ServiceError::InsufficientBalance;
-
-mod mixing;
 
 const AYE: u8 = 128;
 const NAY: u8 = 0;
@@ -345,7 +343,7 @@ async fn mix_votes_and_submit_on_chain(
             VoteMixRequest::new(request.aye, request.balance)
         })
         .collect::<Vec<_>>();
-    let Some(mixing_result) = mixing::mix_votes(&mix_requests) else {
+    let Some(mixing_result) = enclave::mix_votes(&mix_requests) else {
         // TODO Vote abstain with a minimum balance.
         // TODO Should the enclave produce the extrinic calls structs? It would prove the enclave
         //  intiated the abstain votes. Otherwise, users are trusting the host service is correctly
