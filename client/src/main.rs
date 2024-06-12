@@ -5,12 +5,14 @@ use bigdecimal::{BigDecimal, ToPrimitive};
 use clap::{Parser, Subcommand};
 use DispatchError::Module;
 use reqwest::{Client, StatusCode, Url};
+use sp_core::Encode;
 use strum::Display;
 use subxt::error::DispatchError;
 use subxt::Error::Runtime;
+use subxt::utils::MultiSignature;
 use subxt_signer::sr25519::Keypair;
 
-use common::{account_to_address, is_glove_member};
+use common::{account_to_address, is_glove_member, SignedVoteRequest};
 use common::{RemoveVoteRequest, VoteRequest};
 use common::metadata::runtime_types::pallet_proxy::pallet::Error::Duplicate;
 use common::metadata::runtime_types::pallet_proxy::pallet::Error::NotFound;
@@ -76,14 +78,16 @@ async fn vote(
     let balance = (balance_major_units * 10u128.pow(network.token_decimals as u32))
         .to_u128()
         .context("Vote balance is too big")?;
-    let vote_request = VoteRequest::new(network.account(), poll_index, aye, balance);
+    let request = VoteRequest::new(network.account(), poll_index, aye, balance);
+    let encoded_request = request.encode();
+    let signature = MultiSignature::Sr25519(network.keypair.sign(encoded_request.as_slice()).0);
     let response = http_client
         .post(url_with_path(glove_url, "vote"))
-        .json(&vote_request)
+        .json(&SignedVoteRequest { request: encoded_request, signature: signature.encode() })
         .send().await
         .context("Unable to send vote request")?;
     if response.status() == StatusCode::OK {
-        Ok(SuccessOutput::Voted { nonce: vote_request.nonce })
+        Ok(SuccessOutput::Voted { nonce: request.nonce })
     } else {
         bail!(response.text().await?)
     }
@@ -141,7 +145,11 @@ fn url_with_path(url: &Url, path: &str) -> Url {
 #[derive(Debug, Parser)]
 #[command(version, about = "Glove CLI client")]
 struct Args {
-    /// Secret phrase for the Glove client account
+    /// The secret phrase for the Glove client account. This is a secret seed with optional
+    /// derivation paths. An Sr25519 key will be derived from this for signing.
+    ///
+    /// See https://wiki.polkadot.network/docs/learn-account-advanced#derivation-paths for more
+    /// details.
     #[arg(long, value_parser = common::parse_secret_phrase)]
     secret_phrase: Keypair,
 

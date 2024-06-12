@@ -2,9 +2,14 @@ use std::fmt::Debug;
 use std::str::FromStr;
 
 use anyhow::{Context, Result};
+use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use rand::random;
 use serde::{Deserialize, Serialize};
+use serde_with::base64::Base64;
+use serde_with::serde_as;
 use sp_core::crypto::{AccountId32, Ss58Codec};
+use sp_runtime::MultiSignature;
+use sp_runtime::traits::Verify;
 use ss58_registry::{Ss58AddressFormat, Ss58AddressFormatRegistry, Token};
 use subxt::blocks::ExtrinsicEvents;
 use subxt::Error as SubxtError;
@@ -133,8 +138,9 @@ pub async fn is_glove_member(
     let result = network.api.storage().at_latest().await?.fetch(&proxies_query).await?;
     if let Some(proxies) = result {
         let glove_account = core_to_subxt(glove_account);
-        Ok(
-            proxies.0.0.iter().any(|proxy| {
+        Ok(proxies.0.0
+            .iter()
+            .any(|proxy| {
                 matches!(proxy.proxy_type, ProxyType::Any | ProxyType::Governance) &&
                     proxy.delegate == glove_account
             })
@@ -159,7 +165,25 @@ pub struct ServiceInfo {
     pub network_url: String
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde_as]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct SignedVoteRequest {
+    #[serde_as(as = "Base64")]
+    pub request: Vec<u8>,
+    #[serde_as(as = "Base64")]
+    pub signature: Vec<u8>
+}
+
+impl SignedVoteRequest {
+    pub fn decode(&self) -> Result<Option<VoteRequest>, parity_scale_codec::Error> {
+        let request = VoteRequest::decode(&mut self.request.as_slice())?;
+        let signature = MultiSignature::decode(&mut self.signature.as_slice())?;
+        let valid = signature.verify(self.request.as_slice(), &request.account);
+        Ok(valid.then_some(request))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
 pub struct VoteRequest {
     pub account: AccountId32,
     pub poll_index: u32,
@@ -178,4 +202,87 @@ impl VoteRequest {
 pub struct RemoveVoteRequest {
     pub account: AccountId32,
     pub poll_index: u32
+}
+
+#[cfg(test)]
+mod tests {
+    use base64::Engine;
+    use base64::prelude::BASE64_STANDARD;
+    use serde_json::{json, Value};
+    use sp_core::{Pair, sr25519};
+
+    use super::*;
+
+    #[test]
+    fn signed_vote_request_json_verify() {
+        let (pair, _) = sr25519::Pair::generate();
+
+        let request = VoteRequest::new(pair.public().into(), 11, true, 100);
+        let encoded_request = request.encode();
+        let signature: MultiSignature = pair.sign(encoded_request.as_slice()).into();
+
+        let signed_request = SignedVoteRequest {
+            request: encoded_request,
+            signature: signature.encode()
+        };
+
+        let json = serde_json::to_string(&signed_request).unwrap();
+        println!("{}", json);
+
+        assert_eq!(
+            serde_json::from_str::<Value>(&json).unwrap(),
+            json!({
+                "request": BASE64_STANDARD.encode(&signed_request.request),
+                "signature": BASE64_STANDARD.encode(&signed_request.signature)
+            })
+        );
+
+        let deserialized: SignedVoteRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, signed_request);
+
+        let decoded = deserialized.decode().unwrap().unwrap();
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn different_signer_to_request_account() {
+        let (pair1, _) = sr25519::Pair::generate();
+        let (pair2, _) = sr25519::Pair::generate();
+
+        let request = VoteRequest::new(pair1.public().into(), 11, true, 100);
+        let encoded_request = request.encode();
+        let signature: MultiSignature = pair2.sign(encoded_request.as_slice()).into();
+
+        let signed_request = SignedVoteRequest {
+            request: encoded_request,
+            signature: signature.encode()
+        };
+
+        let json = serde_json::to_string(&signed_request).unwrap();
+        let deserialized: SignedVoteRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, signed_request);
+
+        assert_eq!(deserialized.decode().unwrap(), None);
+    }
+
+    #[test]
+    fn modified_request() {
+        let (pair1, _) = sr25519::Pair::generate();
+        let (pair2, _) = sr25519::Pair::generate();
+
+        let original_request = VoteRequest::new(pair1.public().into(), 11, true, 100);
+        let modified_request = VoteRequest::new(pair1.public().into(), 11, false, 100);
+        let signature: MultiSignature = pair2.sign(original_request.encode().as_slice()).into();
+
+        let signed_request = SignedVoteRequest {
+            request: modified_request.encode(),
+            signature: signature.encode()
+        };
+
+        let json = serde_json::to_string(&signed_request).unwrap();
+        let deserialized: SignedVoteRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, signed_request);
+
+        assert_eq!(deserialized.decode().unwrap(), None);
+    }
 }

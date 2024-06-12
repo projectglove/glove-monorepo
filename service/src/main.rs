@@ -9,6 +9,7 @@ use axum::Router;
 use axum::routing::{get, post};
 use clap::Parser;
 use itertools::Itertools;
+use parity_scale_codec::Error as ScaleError;
 use sp_runtime::AccountId32;
 use subxt::Error as SubxtError;
 use subxt_signer::sr25519::Keypair;
@@ -21,7 +22,7 @@ use tracing::{debug, info};
 use tracing::log::warn;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
-use common::{is_glove_member, ServiceInfo, SubstrateNetwork, VoteRequest};
+use common::{is_glove_member, ServiceInfo, SignedVoteRequest, SubstrateNetwork, VoteRequest};
 use common::account_to_address;
 use common::BatchError;
 use common::core_to_subxt;
@@ -41,8 +42,9 @@ use common::metadata::storage;
 use common::RemoveVoteRequest;
 use enclave::VoteMixRequest;
 use RuntimeError::ConvictionVoting;
-use ServiceError::{NotMember, PollNotOngoing};
+use ServiceError::{NotMember, PollNotOngoing, Scale};
 use ServiceError::InsufficientBalance;
+use crate::ServiceError::InvalidRequestSignature;
 
 const AYE: u8 = 128;
 const NAY: u8 = 0;
@@ -190,10 +192,11 @@ async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
 // TODO Reject if new vote request reaches max batch size limit for poll
 async fn vote(
     State(context): State<Arc<GloveContext>>,
-    Json(payload): Json<VoteRequest>
+    Json(payload): Json<SignedVoteRequest>
 ) -> Result<(), ServiceError> {
-    let poll_index = payload.poll_index;
-    if !is_glove_member(&context.network, payload.account.clone(), context.network.account()).await? {
+    let request = payload.decode()?.ok_or(InvalidRequestSignature)?;
+    let poll_index = request.poll_index;
+    if !is_glove_member(&context.network, request.account.clone(), context.network.account()).await? {
         return Err(NotMember);
     }
     if !is_poll_ongoing(&context.network, poll_index).await? {
@@ -203,11 +206,11 @@ async fn vote(
     // significantly less than the vote request balance. A malicious actor could use this to scew
     // the poll by passing a balance value much higher than they have, knowing there's a good chance
     // it won't be fully utilised.
-    if account_balance(&context.network, payload.account.clone()).await? < payload.balance {
+    if account_balance(&context.network, request.account.clone()).await? < request.balance {
         return Err(InsufficientBalance);
     }
     let poll = context.state.get_poll(poll_index).await;
-    let initiate_mix = poll.add_vote_request(payload).await;
+    let initiate_mix = poll.add_vote_request(request).await;
     if initiate_mix {
         schedule_vote_mixing(context, poll);
     }
@@ -456,12 +459,16 @@ impl ProxyError {
 
 #[derive(thiserror::Error, Debug)]
 enum ServiceError {
+    #[error("Signature on signed vote request is invalid")]
+    InvalidRequestSignature,
     #[error("Client is not a member of the Glove proxy")]
     NotMember,
     #[error("Poll is not ongoing or does not exist")]
     PollNotOngoing,
     #[error("Insufficient account balance for vote")]
     InsufficientBalance,
+    #[error("Scale decoding error: {0}")]
+    Scale(#[from] ScaleError),
     #[error("Proxy error: {0}")]
     Proxy(#[from] ProxyError),
     #[error("Internal Subxt error: {0}")]
@@ -474,6 +481,7 @@ impl IntoResponse for ServiceError {
             NotMember => (StatusCode::BAD_REQUEST, self.to_string()),
             PollNotOngoing => (StatusCode::BAD_REQUEST, self.to_string()),
             InsufficientBalance => (StatusCode::BAD_REQUEST, self.to_string()),
+            Scale(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             _ => {
                 warn!("{:?}", self);
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
