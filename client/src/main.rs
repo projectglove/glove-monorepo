@@ -12,13 +12,14 @@ use subxt::Error::Runtime;
 use subxt::utils::MultiSignature;
 use subxt_signer::sr25519::Keypair;
 
-use common::{account_to_address, is_glove_member, SignedVoteRequest};
-use common::{RemoveVoteRequest, VoteRequest};
-use common::metadata::runtime_types::pallet_proxy::pallet::Error::Duplicate;
-use common::metadata::runtime_types::pallet_proxy::pallet::Error::NotFound;
-use common::metadata::runtime_types::polkadot_runtime::{ProxyType, RuntimeError};
-use common::ServiceInfo;
-use common::SubstrateNetwork;
+use client_interface::{account_to_address, is_glove_member, SignedVoteRequest};
+use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::Duplicate;
+use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::NotFound;
+use client_interface::metadata::runtime_types::polkadot_runtime::{ProxyType, RuntimeError};
+use client_interface::RemoveVoteRequest;
+use client_interface::ServiceInfo;
+use client_interface::SubstrateNetwork;
+use common::VoteRequest;
 use RuntimeError::Proxy;
 
 #[tokio::main]
@@ -50,7 +51,7 @@ async fn join_glove(service_info: &ServiceInfo, network: &SubstrateNetwork) -> R
     if is_glove_member(network, network.account(), service_info.proxy_account.clone()).await? {
         return Ok(SuccessOutput::AlreadyGloveMember);
     }
-    let add_proxy_call = common::metadata::tx()
+    let add_proxy_call = client_interface::metadata::tx()
         .proxy()
         .add_proxy(account_to_address(service_info.proxy_account.clone()), ProxyType::Governance, 0)
         .unvalidated();
@@ -119,7 +120,7 @@ async fn leave_glove(service_info: &ServiceInfo, network: &SubstrateNetwork) -> 
     if !is_glove_member(network, network.account(), service_info.proxy_account.clone()).await? {
         return Ok(SuccessOutput::NotGloveMember);
     }
-    let add_proxy_call = common::metadata::tx()
+    let add_proxy_call = client_interface::metadata::tx()
         .proxy()
         .remove_proxy(account_to_address(service_info.proxy_account.clone()), ProxyType::Governance, 0)
         .unvalidated();
@@ -150,7 +151,7 @@ struct Args {
     ///
     /// See https://wiki.polkadot.network/docs/learn-account-advanced#derivation-paths for more
     /// details.
-    #[arg(long, value_parser = common::parse_secret_phrase)]
+    #[arg(long, value_parser = client_interface::parse_secret_phrase)]
     secret_phrase: Keypair,
 
     /// The URL of the Glove service

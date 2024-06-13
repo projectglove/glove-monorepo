@@ -869,6 +869,7 @@ dependencies = [
  "anyhow",
  "bigdecimal",
  "clap",
+ "client-interface",
  "common",
  "reqwest",
  "sp-core 33.0.1",
@@ -879,17 +880,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "colorchoice"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b6a852b24ab71dffc585bcb46eaf7959d175cb865a7152e35b348d1b2960422"
-
-[[package]]
-name = "common"
+name = "client-interface"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "common",
  "parity-scale-codec",
  "rand",
  "serde",
@@ -902,6 +898,21 @@ dependencies = [
  "subxt-core",
  "subxt-signer",
  "thiserror",
+]
+
+[[package]]
+name = "colorchoice"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b6a852b24ab71dffc585bcb46eaf7959d175cb865a7152e35b348d1b2960422"
+
+[[package]]
+name = "common"
+version = "0.1.0"
+dependencies = [
+ "parity-scale-codec",
+ "rand",
+ "sp-core 33.0.1",
 ]
 
 [[package]]
@@ -1423,7 +1434,16 @@ name = "enclave"
 version = "0.1.0"
 dependencies = [
  "bigdecimal",
+ "common",
+ "enclave-interface",
  "rand",
+]
+
+[[package]]
+name = "enclave-interface"
+version = "0.1.0"
+dependencies = [
+ "common",
 ]
 
 [[package]]
@@ -4089,8 +4109,10 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "client-interface",
  "common",
  "enclave",
+ "enclave-interface",
  "itertools 0.13.0",
  "parity-scale-codec",
  "sp-runtime 37.0.0",

@@ -5,17 +5,19 @@ edition = "2021"
 
 [dependencies]
 common = { path = "../common" }
-enclave = { path = "../enclave" }
-anyhow = "1.0.86"
-axum = "0.7.5"
-clap = { version = "4.5.4", features = ["derive"] }
-sp-runtime = "37.0.0"
-subxt = "0.37.0"
-subxt-signer = { version = "0.37.0", features = ["subxt"] }
-thiserror = "1.0.61"
-tokio = { version = "1.37.0", features = ["rt", "rt-multi-thread", "macros"] }
-itertools = "0.13.0"
-tower-http = { version = "0.5.2", features = ["trace"] }
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-tracing = "0.1.40"
-parity-scale-codec = "3.6.12"
+enclave = { path = "../enclave" }   #TODO Remove this once enclave is separate binary
+enclave-interface = { path = "../enclave-interface" }
+client-interface = { path = "../client-interface" }
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+sp-runtime.workspace = true
+subxt.workspace = true
+subxt-signer.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+itertools.workspace = true
+tower-http.workspace = true
+tracing-subscriber.workspace = true
+tracing.workspace = true
+parity-scale-codec.workspace = true

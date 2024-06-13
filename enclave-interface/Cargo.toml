@@ -1,0 +1,8 @@
+[package]
+name = "enclave-interface"
+description = "Interface between the enclave and service"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+common = { path = "../common" }

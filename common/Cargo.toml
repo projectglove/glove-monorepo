@@ -1,22 +1,10 @@
 [package]
 name = "common"
+description = "Common types and utilities used by all three components: service, client, and enclave."
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0.86"
-rand = { version = "0.8.5", features = [] }
-sp-core = "33.0.1"
-sp-runtime = "37.0.0"
-ss58-registry = "1.47.0"
-subxt = "0.37.0"
-subxt-core = { version = "0.37.0", features = ["substrate-compat"] }
-subxt-signer = { version = "0.37.0", features = ["subxt"] }
-thiserror = "1.0.61"
-serde = { version = "1.0.203", features = ["derive"] }
-serde_with = { version = "3.8.1", features = ["base64"] }
-parity-scale-codec = "3.6.12"
-
-[dev-dependencies]
-serde_json = "1.0.117"
-base64 = "0.22.1"
+parity-scale-codec.workspace = true
+rand.workspace = true
+sp-core.workspace = true

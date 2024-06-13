@@ -22,29 +22,30 @@ use tracing::{debug, info};
 use tracing::log::warn;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
-use common::{is_glove_member, ServiceInfo, SignedVoteRequest, SubstrateNetwork, VoteRequest};
-use common::account_to_address;
-use common::BatchError;
-use common::core_to_subxt;
-use common::metadata::proxy::events::ProxyExecuted;
-use common::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
-use common::metadata::runtime_types::pallet_conviction_voting::pallet::Error::{InsufficientFunds, NotOngoing, NotVoter};
-use common::metadata::runtime_types::pallet_conviction_voting::vote::AccountVote;
-use common::metadata::runtime_types::pallet_conviction_voting::vote::Vote;
-use common::metadata::runtime_types::pallet_proxy::pallet::Call as ProxyCall;
-use common::metadata::runtime_types::pallet_proxy::pallet::Error::NotProxy;
-use common::metadata::runtime_types::pallet_referenda::types::ReferendumInfo;
-use common::metadata::runtime_types::polkadot_runtime::RuntimeCall;
-use common::metadata::runtime_types::polkadot_runtime::RuntimeError;
-use common::metadata::runtime_types::polkadot_runtime::RuntimeError::Proxy;
-use common::metadata::runtime_types::sp_runtime::DispatchError as MetadataDispatchError;
-use common::metadata::storage;
-use common::RemoveVoteRequest;
+use client_interface::{is_glove_member, ServiceInfo, SignedVoteRequest, SubstrateNetwork};
+use client_interface::account_to_address;
+use client_interface::BatchError;
+use client_interface::core_to_subxt;
+use client_interface::metadata::proxy::events::ProxyExecuted;
+use client_interface::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
+use client_interface::metadata::runtime_types::pallet_conviction_voting::pallet::Error::{InsufficientFunds, NotOngoing, NotVoter};
+use client_interface::metadata::runtime_types::pallet_conviction_voting::vote::AccountVote;
+use client_interface::metadata::runtime_types::pallet_conviction_voting::vote::Vote;
+use client_interface::metadata::runtime_types::pallet_proxy::pallet::Call as ProxyCall;
+use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::NotProxy;
+use client_interface::metadata::runtime_types::pallet_referenda::types::ReferendumInfo;
+use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeCall;
+use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError;
+use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError::Proxy;
+use client_interface::metadata::runtime_types::sp_runtime::DispatchError as MetadataDispatchError;
+use client_interface::metadata::storage;
+use client_interface::RemoveVoteRequest;
+use common::VoteRequest;
 use enclave::VoteMixRequest;
 use RuntimeError::ConvictionVoting;
 use ServiceError::{NotMember, PollNotOngoing, Scale};
 use ServiceError::InsufficientBalance;
-use crate::ServiceError::InvalidRequestSignature;
+use ServiceError::InvalidRequestSignature;
 
 const AYE: u8 = 128;
 const NAY: u8 = 0;
@@ -53,7 +54,7 @@ const NAY: u8 = 0;
 #[command(version, about = "Glove proxy service")]
 struct Args {
     /// Secret phrase for the Glove proxy account
-    #[arg(long, value_parser = common::parse_secret_phrase)]
+    #[arg(long, value_parser = client_interface::parse_secret_phrase)]
     proxy_secret_phrase: Keypair,
 
     /// URL for the network endpoint.
