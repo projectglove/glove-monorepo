@@ -4,23 +4,11 @@ use bigdecimal::{BigDecimal, ToPrimitive};
 use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
 
-use enclave_interface::VoteMixingResult;
+use enclave_interface::{SignedVoteRequest, VoteMixingResult};
 
-#[derive(Copy, Clone, Debug)]
-pub struct VoteMixRequest {
-    aye: bool,
-    balance: u128
-}
-
-impl VoteMixRequest {
-    pub fn new(aye: bool, balance: u128) -> Self {
-        Self { aye, balance }
-    }
-}
-
-pub fn mix_votes(requests: &Vec<VoteMixRequest>) -> Option<VoteMixingResult> {
-    let ayes_balance = requests.iter().filter(|r| r.aye).map(|r| r.balance).sum::<u128>();
-    let nays_balance = requests.iter().filter(|r| !r.aye).map(|r| r.balance).sum::<u128>();
+pub fn mix_votes(signed_requests: &Vec<SignedVoteRequest>) -> Option<VoteMixingResult> {
+    let ayes_balance = signed_requests.iter().filter(|r| r.request.aye).map(|r| r.request.balance).sum::<u128>();
+    let nays_balance = signed_requests.iter().filter(|r| !r.request.aye).map(|r| r.request.balance).sum::<u128>();
     let net_balance = ayes_balance.abs_diff(nays_balance);
     if net_balance == 0 {
         return None;
@@ -30,12 +18,12 @@ pub fn mix_votes(requests: &Vec<VoteMixRequest>) -> Option<VoteMixingResult> {
 
     // Generate a random multiplier between 1x and 2x.
     let multipler_range = Uniform::from(1.0..2.0);
-    let randomized_balances: Vec<BigDecimal> = requests
+    let randomized_balances: Vec<BigDecimal> = signed_requests
         .iter()
-        .map(|request| {
+        .map(|signed_request| {
             let random_multiplier = multipler_range.sample(&mut rng);
             let random_multiplier = BigDecimal::from_str(random_multiplier.to_string().as_str()).unwrap();
-            random_multiplier * request.balance
+            random_multiplier * signed_request.request.balance
         })
         .collect();
 
@@ -49,7 +37,7 @@ pub fn mix_votes(requests: &Vec<VoteMixRequest>) -> Option<VoteMixingResult> {
             // It's possible the randomized weights will lead to a value greater than the request
             // balance. This is more likely to happen if there are fewer requests and the random
             // multiplier is sufficiently relatively bigger than the others.
-            (net_balance * weight).to_u128().unwrap().min(requests[index].balance)
+            (net_balance * weight).to_u128().unwrap().min(signed_requests[index].request.balance)
         })
         .collect();
 
@@ -57,8 +45,8 @@ pub fn mix_votes(requests: &Vec<VoteMixRequest>) -> Option<VoteMixingResult> {
 
     let mut index: usize = 0;
     while leftover_balance > 0 {
-        if requests[index].balance > net_balances[index] {
-            let balance_allowance = requests[index].balance - net_balances[index];
+        if signed_requests[index].request.balance > net_balances[index] {
+            let balance_allowance = signed_requests[index].request.balance - net_balances[index];
             let assign_extra_balance = leftover_balance.min(balance_allowance);
             net_balances[index] += assign_extra_balance;
             leftover_balance -= assign_extra_balance;
@@ -71,6 +59,12 @@ pub fn mix_votes(requests: &Vec<VoteMixRequest>) -> Option<VoteMixingResult> {
 
 #[cfg(test)]
 mod tests {
+    use sp_core::crypto::AccountId32;
+    use sp_runtime::MultiSignature;
+    use sp_runtime::testing::sr25519;
+
+    use common::VoteRequest;
+
     use super::*;
 
     #[test]
@@ -81,7 +75,7 @@ mod tests {
     #[test]
     fn single() {
         assert_eq!(
-            mix_votes(&vec![VoteMixRequest::new(true, 1u128)]),
+            mix_votes(&vec![vote_request(true, 1u128)]),
             Some(VoteMixingResult { aye: true, balances: vec![1u128] })
         );
     }
@@ -90,8 +84,8 @@ mod tests {
     fn two_equal_but_opposite_votes() {
         assert_eq!(
             mix_votes(&vec![
-                VoteMixRequest::new(true, 10u128),
-                VoteMixRequest::new(false, 10u128)
+                vote_request(true, 10u128),
+                vote_request(false, 10u128)
             ]),
             None
         );
@@ -101,8 +95,8 @@ mod tests {
     fn two_aye_votes() {
         assert_eq!(
             mix_votes(&vec![
-                VoteMixRequest::new(true, 10u128),
-                VoteMixRequest::new(true, 5u128)
+                vote_request(true, 10u128),
+                vote_request(true, 5u128)
             ]),
             Some(VoteMixingResult { aye: true, balances: vec![10u128, 5u128] })
         );
@@ -112,8 +106,8 @@ mod tests {
     fn two_nay_votes() {
         assert_eq!(
             mix_votes(&vec![
-                VoteMixRequest::new(false, 5u128),
-                VoteMixRequest::new(false, 10u128)
+                vote_request(false, 5u128),
+                vote_request(false, 10u128)
             ]),
             Some(VoteMixingResult { aye: false, balances: vec![5u128, 10u128] })
         );
@@ -122,10 +116,10 @@ mod tests {
     #[test]
     fn aye_votes_bigger_than_nye_votes() {
         let requests = vec![
-            VoteMixRequest::new(true, 30u128),
-            VoteMixRequest::new(true, 20u128),
-            VoteMixRequest::new(false, 26u128),
-            VoteMixRequest::new(false, 4u128)
+            vote_request(true, 30u128),
+            vote_request(true, 20u128),
+            vote_request(false, 26u128),
+            vote_request(false, 4u128)
         ];
         let result = mix_votes(&requests).unwrap();
         assert_eq!(result.aye, true);
@@ -133,7 +127,7 @@ mod tests {
         assert_eq!(result.balances.iter().sum::<u128>(), 20u128);
 
         for (index, mixed_balance) in result.balances.iter().enumerate() {
-            assert!(*mixed_balance <= requests[index].balance);
+            assert!(*mixed_balance <= requests[index].request.balance);
         }
         println!("{:?}", result)
     }
@@ -141,8 +135,8 @@ mod tests {
     #[test]
     fn aye_votes_smaller_than_nye_votes() {
         let requests = vec![
-            VoteMixRequest::new(false, 32u128),
-            VoteMixRequest::new(true, 15u128),
+            vote_request(false, 32u128),
+            vote_request(true, 15u128),
         ];
         let result = mix_votes(&requests).unwrap();
         assert_eq!(result.aye, false);
@@ -150,16 +144,23 @@ mod tests {
         assert_eq!(result.balances.iter().sum::<u128>(), 17u128);
 
         for (index, mixed_balance) in result.balances.iter().enumerate() {
-            assert!(*mixed_balance <= requests[index].balance);
+            assert!(*mixed_balance <= requests[index].request.balance);
         }
     }
 
     #[test]
     fn leftovers() {
         let result = mix_votes(&vec![
-            VoteMixRequest::new(false, 5u128),
-            VoteMixRequest::new(true, 10u128)
+            vote_request(false, 5u128),
+            vote_request(true, 10u128)
         ]).unwrap();
         assert_eq!(result.balances.iter().sum::<u128>(), 5u128);
+    }
+
+    fn vote_request(aye: bool, balance: u128) -> SignedVoteRequest {
+        SignedVoteRequest {
+            request: VoteRequest::new(AccountId32::from([1; 32]), 0, aye, balance),
+            signature: MultiSignature::Sr25519(sr25519::Signature::default())
+        }
     }
 }

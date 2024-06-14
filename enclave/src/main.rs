@@ -3,7 +3,6 @@ use std::env::args;
 use parity_scale_codec::{DecodeAll, Encode};
 use tokio::net::UnixStream;
 
-use enclave::VoteMixRequest;
 use enclave_interface::{Error, MixVotesRequest, MixVotesResult, read_len_prefix_bytes, write_len_prefix_bytes};
 
 // The Glove enclave is a simple process which listens for vote mixing requests on a UNIX socket.
@@ -25,17 +24,11 @@ fn process_request(bytes: Vec<u8>) -> MixVotesResult {
     let result = match request {
         Ok(request) => {
             println!("ENCLAVE> Received request: {:?}", request);
-            // Convert to VoteMixRequest and at the same time validate the signatures.
-            let mix_requests = request.requests
+            let signatures_valid = request.requests
                 .iter()
-                .filter(|signed_request| signed_request.is_signature_valid())
-                .map(|signed_request| {
-                    // TODO Define a trait and update enclave::mix_votes to use it.
-                    VoteMixRequest::new(signed_request.request.aye, signed_request.request.balance)
-                })
-                .collect::<Vec<_>>();
-            if mix_requests.len() == request.requests.len() {
-                Ok(enclave::mix_votes(&mix_requests))
+                .all(|signed_request| signed_request.is_signature_valid());
+            if signatures_valid {
+                Ok(enclave::mix_votes(&request.requests))
             } else {
                 Err(Error::InvalidSignature)
             }

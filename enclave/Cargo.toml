@@ -11,3 +11,7 @@ rand.workspace = true
 anyhow.workspace = true
 parity-scale-codec.workspace = true
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+sp-core.workspace = true
+sp-runtime.workspace = true

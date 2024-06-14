@@ -204,8 +204,8 @@ async fn vote(
     let network = &context.network;
     // Receive the signed vote request as a JSON payload represented by `client_interface::SignedVoteRequest`.
     // Decode it into the `enclave_interface::SignedVoteRequest` version which is better typed and
-    // used by the enclave. In the process we end up verifying the signature, which whilst typically
-    // is not necessary since the enclave will do it, is a good sanity check.
+    // used by the enclave. In the process we end up verifying the signature, which whilst is not
+    // necessary since the enclave will do it, is a good sanity check.
     let (request, signature) = payload.decode()?.ok_or(InvalidRequestSignature)?;
     let signed_request = SignedVoteRequest { request, signature };
     let request = &signed_request.request;
