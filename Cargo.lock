@@ -1433,10 +1433,13 @@ dependencies = [
 name = "enclave"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bigdecimal",
  "common",
  "enclave-interface",
+ "parity-scale-codec",
  "rand",
+ "tokio",
 ]
 
 [[package]]
@@ -1444,6 +1447,10 @@ name = "enclave-interface"
 version = "0.1.0"
 dependencies = [
  "common",
+ "parity-scale-codec",
+ "sp-runtime 37.0.0",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -4111,13 +4118,13 @@ dependencies = [
  "clap",
  "client-interface",
  "common",
- "enclave",
  "enclave-interface",
  "itertools 0.13.0",
  "parity-scale-codec",
  "sp-runtime 37.0.0",
  "subxt",
  "subxt-signer",
+ "tempfile",
  "thiserror",
  "tokio",
  "tower-http",

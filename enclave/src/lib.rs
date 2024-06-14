@@ -4,6 +4,8 @@ use bigdecimal::{BigDecimal, ToPrimitive};
 use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
 
+use enclave_interface::VoteMixingResult;
+
 #[derive(Copy, Clone, Debug)]
 pub struct VoteMixRequest {
     aye: bool,
@@ -14,14 +16,6 @@ impl VoteMixRequest {
     pub fn new(aye: bool, balance: u128) -> Self {
         Self { aye, balance }
     }
-}
-
-#[derive(Debug, PartialEq)]
-pub struct VoteMixingResult {
-    pub aye: bool,
-    /// The randomized mixed balance for the request at the same index. Note, it's possible for the
-    /// value to be zero.
-    pub balances: Vec<u128>
 }
 
 pub fn mix_votes(requests: &Vec<VoteMixRequest>) -> Option<VoteMixingResult> {

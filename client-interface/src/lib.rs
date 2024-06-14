@@ -175,11 +175,11 @@ pub struct SignedVoteRequest {
 }
 
 impl SignedVoteRequest {
-    pub fn decode(&self) -> Result<Option<VoteRequest>, parity_scale_codec::Error> {
+    pub fn decode(&self) -> Result<Option<(VoteRequest, MultiSignature)>, parity_scale_codec::Error> {
         let request = VoteRequest::decode(&mut self.request.as_slice())?;
         let signature = MultiSignature::decode(&mut self.signature.as_slice())?;
         let valid = signature.verify(self.request.as_slice(), &request.account);
-        Ok(valid.then_some(request))
+        Ok(valid.then_some((request, signature)))
     }
 }
 
@@ -223,11 +223,12 @@ mod tests {
             })
         );
 
-        let deserialized: SignedVoteRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized, signed_request);
+        let deserialized_signed_request: SignedVoteRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized_signed_request, signed_request);
 
-        let decoded = deserialized.decode().unwrap().unwrap();
-        assert_eq!(decoded, request);
+        let (decoded_request, decoded_signature) = deserialized_signed_request.decode().unwrap().unwrap();
+        assert_eq!(decoded_request, request);
+        assert_eq!(decoded_signature, signature);
     }
 
     #[test]
@@ -245,10 +246,10 @@ mod tests {
         };
 
         let json = serde_json::to_string(&signed_request).unwrap();
-        let deserialized: SignedVoteRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized, signed_request);
+        let deserialized_signed_request: SignedVoteRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized_signed_request, signed_request);
 
-        assert_eq!(deserialized.decode().unwrap(), None);
+        assert_eq!(deserialized_signed_request.decode().unwrap(), None);
     }
 
     #[test]

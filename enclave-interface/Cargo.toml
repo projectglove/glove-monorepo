@@ -6,3 +6,7 @@ edition = "2021"
 
 [dependencies]
 common = { path = "../common" }
+parity-scale-codec.workspace = true
+sp-runtime.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util"] }

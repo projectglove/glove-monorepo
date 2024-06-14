@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,7 +10,7 @@ use axum::Router;
 use axum::routing::{get, post};
 use clap::Parser;
 use itertools::Itertools;
-use parity_scale_codec::Error as ScaleError;
+use parity_scale_codec::{DecodeAll, Encode, Error as ScaleError};
 use sp_runtime::AccountId32;
 use subxt::Error as SubxtError;
 use subxt_signer::sr25519::Keypair;
@@ -22,7 +23,7 @@ use tracing::{debug, info};
 use tracing::log::warn;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
-use client_interface::{is_glove_member, ServiceInfo, SignedVoteRequest, SubstrateNetwork};
+use client_interface::{is_glove_member, ServiceInfo, SubstrateNetwork};
 use client_interface::account_to_address;
 use client_interface::BatchError;
 use client_interface::core_to_subxt;
@@ -40,9 +41,9 @@ use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError::P
 use client_interface::metadata::runtime_types::sp_runtime::DispatchError as MetadataDispatchError;
 use client_interface::metadata::storage;
 use client_interface::RemoveVoteRequest;
-use common::VoteRequest;
-use enclave::VoteMixRequest;
+use enclave_interface::{MixVotesRequest, MixVotesResult, SignedVoteRequest, VoteMixingResult};
 use RuntimeError::ConvictionVoting;
+use service::{EnclaveHandle, MockEnclaveHandle};
 use ServiceError::{NotMember, PollNotOngoing, Scale};
 use ServiceError::InsufficientBalance;
 use ServiceError::InvalidRequestSignature;
@@ -80,8 +81,12 @@ async fn main() -> anyhow::Result<()> {
     let network = SubstrateNetwork::connect(args.network_url, args.proxy_secret_phrase).await?;
     info!("Connected to Substrate network: {}", network.url);
 
+    warn!("Starting mock enclave, which is insecure");
+    let mock_enclave_handle = MockEnclaveHandle::spawn().await?;
+
     let glove_context = Arc::new(GloveContext {
         network,
+        enclave_handle: Box::new(mock_enclave_handle),
         state: GloveState::default()
     });
 
@@ -99,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
 
 struct GloveContext {
     network: SubstrateNetwork,
+    enclave_handle: Box<dyn EnclaveHandle>,
     state: GloveState
 }
 
@@ -138,12 +144,12 @@ struct Poll {
 
 impl Poll {
     /// Returns `true` if vote mixing should be initiated as a background task.
-    async fn add_vote_request(&self, vote_request: VoteRequest) -> bool {
-        if vote_request.poll_index != self.index {
-            panic!("Request doesn't belong here: {} vs {:?}", self.index, vote_request);
+    async fn add_vote_request(&self, signed_request: SignedVoteRequest) -> bool {
+        if signed_request.request.poll_index != self.index {
+            panic!("Request doesn't belong here: {} vs {:?}", self.index, signed_request);
         }
         let mut poll = self.inner.lock().await;
-        poll.requests.insert(vote_request.account.clone(), vote_request);
+        poll.requests.insert(signed_request.request.account.clone(), signed_request);
         let initiate_mix = !poll.pending_mix;
         poll.pending_mix = true;
         initiate_mix
@@ -157,7 +163,7 @@ impl Poll {
         Some(initiate_mix)
     }
 
-    async fn begin_mix(&self) -> Option<Vec<VoteRequest>> {
+    async fn begin_mix(&self) -> Option<Vec<SignedVoteRequest>> {
         let mut poll = self.inner.lock().await;
         if !poll.pending_mix {
             return None;
@@ -167,7 +173,7 @@ impl Poll {
             poll.requests
                 .clone()
                 .into_values()
-                .sorted_by(|a, b| Ord::cmp(&a.account, &b.account))
+                .sorted_by(|a, b| Ord::cmp(&a.request.account, &b.request.account))
                 .collect()
         )
     }
@@ -175,7 +181,7 @@ impl Poll {
 
 #[derive(Debug, Default)]
 struct InnerPoll {
-    requests: HashMap<AccountId32, VoteRequest>,
+    requests: HashMap<AccountId32, SignedVoteRequest>,
     /// Initially `false`, this is `true` if a background task has been kicked off to mix the vote
     /// requests and submit the results on-chain. The task will set this back to `false` once it has
     /// started by calling [Poll::begin_mix].
@@ -193,25 +199,32 @@ async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
 // TODO Reject if new vote request reaches max batch size limit for poll
 async fn vote(
     State(context): State<Arc<GloveContext>>,
-    Json(payload): Json<SignedVoteRequest>
+    Json(payload): Json<client_interface::SignedVoteRequest>
 ) -> Result<(), ServiceError> {
-    let request = payload.decode()?.ok_or(InvalidRequestSignature)?;
-    let poll_index = request.poll_index;
-    if !is_glove_member(&context.network, request.account.clone(), context.network.account()).await? {
+    let network = &context.network;
+    // Receive the signed vote request as a JSON payload represented by `client_interface::SignedVoteRequest`.
+    // Decode it into the `enclave_interface::SignedVoteRequest` version which is better typed and
+    // used by the enclave. In the process we end up verifying the signature, which whilst typically
+    // is not necessary since the enclave will do it, is a good sanity check.
+    let (request, signature) = payload.decode()?.ok_or(InvalidRequestSignature)?;
+    let signed_request = SignedVoteRequest { request, signature };
+    let request = &signed_request.request;
+
+    if !is_glove_member(network, request.account.clone(), network.account()).await? {
         return Err(NotMember);
     }
-    if !is_poll_ongoing(&context.network, poll_index).await? {
+    if !is_poll_ongoing(network, request.poll_index).await? {
         return Err(PollNotOngoing);
     }
     // In a normal poll with multiple votes on both sides, the on-chain vote balance can be
     // significantly less than the vote request balance. A malicious actor could use this to scew
     // the poll by passing a balance value much higher than they have, knowing there's a good chance
     // it won't be fully utilised.
-    if account_balance(&context.network, request.account.clone()).await? < request.balance {
+    if account_balance(network, request.account.clone()).await? < request.balance {
         return Err(InsufficientBalance);
     }
-    let poll = context.state.get_poll(poll_index).await;
-    let initiate_mix = poll.add_vote_request(request).await;
+    let poll = context.state.get_poll(request.poll_index).await;
+    let initiate_mix = poll.add_vote_request(signed_request).await;
     if initiate_mix {
         schedule_vote_mixing(context, poll);
     }
@@ -288,88 +301,112 @@ fn schedule_vote_mixing(context: Arc<GloveContext>, poll: Poll) {
 // TODO If it's a success then it could include the extrinsic coordinates.
 async fn mix_votes(context: &GloveContext, poll: &Poll) {
     loop {
-        let Some(poll_requests) = poll.begin_mix().await else {
-            // Another task has already started mixing the votes
-            break;
-        };
-        if poll_requests.is_empty() {
-            info!("No votes to mix for poll {}", poll.index);
-            break;
-        }
-        let result = mix_votes_and_submit_on_chain(&context.network, poll.index, &poll_requests).await;
-        if result.is_ok() {
-            info!("Vote mixing for poll {} succeeded", poll.index);
-            break;
-        }
-        match result.unwrap_err() {
-            ProxyError::Module(_, ConvictionVoting(NotOngoing)) => {
-                info!("Poll {} has been detected as no longer ongoing, and so removing it", poll.index);
-                context.state.remove_poll(poll.index).await;
-                break;
-            }
-            ProxyError::Module(batch_index, ConvictionVoting(InsufficientFunds)) => {
-                warn!("Insufficient funds for {:?}. Removing it from poll and trying again",
-                        poll_requests[batch_index]);
-                // TODO On-chain vote needs to be removed as well
-                poll.remove_vote_request(poll_requests[batch_index].account.clone()).await;
-                continue;
-            }
-            ProxyError::Batch(BatchError::Module(batch_index, Proxy(NotProxy))) => {
-                warn!("Account is no longer part of the proxy, removing it from poll and trying again: {:?}",
-                        poll_requests[batch_index]);
-                // TODO How to remove on-chain vote if the account is no longer part of the proxy?
-                poll.remove_vote_request(poll_requests[batch_index].account.clone()).await;
-                continue;
-            }
-            error => {
-                if let Some(batch_index) = error.batch_index() {
-                    warn!("Error mixing votes for {:?}: {:?}", poll_requests[batch_index], error)
-                } else {
-                    warn!("Error mixing votes: {:?}", error)
-                }
+        match try_mix_votes(context, poll).await {
+            Ok(true) => break,
+            Ok(false) => continue,
+            Err(mixing_error) => {
+                warn!("Error mixing votes: {:?}", mixing_error);
                 break;
             }
         }
     }
 }
 
-async fn mix_votes_and_submit_on_chain(
-    network: &SubstrateNetwork,
-    poll_index: u32,
-    poll_requests: &Vec<VoteRequest>
-) -> Result<(), ProxyError> {
-    info!("Mixing votes for poll {}:", poll_index);
-    // Convert to VoteMixRequests
-    let mix_requests = poll_requests
-        .iter()
-        .map(|request| {
-            debug!("{:?}", request);
-            VoteMixRequest::new(request.aye, request.balance)
-        })
-        .collect::<Vec<_>>();
-    let Some(mixing_result) = enclave::mix_votes(&mix_requests) else {
+async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, MixingError> {
+    info!("Mixing votes for poll {}:", poll.index);
+    let Some(poll_requests) = poll.begin_mix().await else {
+        // Another task has already started mixing the votes
+        return Ok(true);
+    };
+
+    let mix_votes_request = MixVotesRequest { requests: poll_requests };
+
+    let vote_mixing_result = mix_votes_in_enclave(&context, &mix_votes_request).await?;
+    let Some(vote_mixing_result) = vote_mixing_result else {
         // TODO Vote abstain with a minimum balance.
         // TODO Should the enclave produce the extrinic calls structs? It would prove the enclave
         //  intiated the abstain votes. Otherwise, users are trusting the host service is correctly
         //  interpreting the enclave's None mixing output.
-        panic!("Net zero mix votes");
+        warn!("Net zero mix votes");
+        return Ok(true);
     };
 
-    debug!("Mixing result: {:?}", mixing_result);
+    let result = submit_mixed_votes_on_chain(
+        &context.network,
+        poll.index,
+        &mix_votes_request.requests,
+        vote_mixing_result
+    ).await;
+    if result.is_ok() {
+        info!("Vote mixing for poll {} succeeded", poll.index);
+        return Ok(true);
+    }
 
-    let proxy_vote_calls = poll_requests
+    match result.unwrap_err() {
+        ProxyError::Module(_, ConvictionVoting(NotOngoing)) => {
+            info!("Poll {} has been detected as no longer ongoing, and so removing it", poll.index);
+            context.state.remove_poll(poll.index).await;
+            Ok(true)
+        }
+        ProxyError::Module(batch_index, ConvictionVoting(InsufficientFunds)) => {
+            let request = &mix_votes_request.requests[batch_index].request;
+            warn!("Insufficient funds for {:?}. Removing it from poll and trying again", request);
+            // TODO On-chain vote needs to be removed as well
+            poll.remove_vote_request(request.account.clone()).await;
+            Ok(false)
+        }
+        ProxyError::Batch(BatchError::Module(batch_index, Proxy(NotProxy))) => {
+            let request = &mix_votes_request.requests[batch_index].request;
+            warn!("Account is no longer part of the proxy, removing it from poll and trying again: {:?}", request);
+            // TODO How to remove on-chain vote if the account is no longer part of the proxy?
+            poll.remove_vote_request(request.account.clone()).await;
+            Ok(false)
+        }
+        proxy_error => {
+            if let Some(batch_index) = proxy_error.batch_index() {
+                warn!("Error submitting mixed votes for {:?}: {:?}",
+                    mix_votes_request.requests[batch_index].request, proxy_error)
+            } else {
+                warn!("Error submitting mixed votes: {:?}", proxy_error)
+            }
+            Ok(true)
+        }
+    }
+}
+
+async fn mix_votes_in_enclave(
+    context: &GloveContext,
+    mix_votes_request: &MixVotesRequest
+) -> Result<Option<VoteMixingResult>, MixingError> {
+    let response = context.enclave_handle.send_and_receive(&mix_votes_request.encode()).await?;
+    let mix_votes_result = MixVotesResult::decode_all(&mut response.as_slice());
+    debug!("Mixing result from enclave: {:?}", mix_votes_result);
+    match mix_votes_result {
+        Ok(MixVotesResult { result: Ok(result) }) => Ok(result),
+        Ok(MixVotesResult { result: Err(enclave_error) }) => Err(enclave_error.into()),
+        Err(scale_error) => Err(scale_error.into())
+    }
+}
+
+async fn submit_mixed_votes_on_chain(
+    network: &SubstrateNetwork,
+    poll_index: u32,
+    signed_requests: &Vec<SignedVoteRequest>,
+    vote_mixing_result: VoteMixingResult
+) -> Result<(), ProxyError> {
+    let proxy_vote_calls = signed_requests
         .iter()
-        .zip(mixing_result.balances)
-        .map(|(request, mix_balance)| {
+        .zip(vote_mixing_result.balances)
+        .map(|(signed_request, mix_balance)| {
             ProxyCall::proxy {
-                real: account_to_address(request.account.clone()),
+                real: account_to_address(signed_request.request.account.clone()),
                 force_proxy_type: None,
                 call: Box::new(RuntimeCall::ConvictionVoting(ConvictionVotingCall::vote {
                     poll_index,
                     vote: AccountVote::Standard {
                         // TODO Deal with mixed_balance of zero
                         // TODO conviction multiplier
-                        vote: Vote(if mixing_result.aye { AYE } else { NAY }),
+                        vote: Vote(if vote_mixing_result.aye { AYE } else { NAY }),
                         balance: mix_balance
                     }
                 })),
@@ -434,6 +471,16 @@ async fn batch_proxy_calls(
 }
 
 #[derive(thiserror::Error, Debug)]
+pub enum MixingError {
+    #[error("IO error: {0}")]
+    Io(#[from] io::Error),
+    #[error("Enclave error: {0}")]
+    Enclave(#[from] enclave_interface::Error),
+    #[error("Scale decoding error: {0}")]
+    Scale(#[from] ScaleError)
+}
+
+#[derive(thiserror::Error, Debug)]
 pub enum ProxyError {
     #[error("Module error from batch index {0}: {1:?}")]
     Module(usize, RuntimeError),
@@ -493,13 +540,17 @@ impl IntoResponse for ServiceError {
 
 #[cfg(test)]
 mod tests {
+    use sp_runtime::MultiSignature;
+    use sp_runtime::testing::sr25519;
+    use common::VoteRequest;
+
     use super::*;
 
     #[tokio::test]
     async fn add_new_vote_and_then_remove() {
         let glove_state = GloveState::default();
         let account = AccountId32::from([1; 32]);
-        let vote_request = VoteRequest::new(account.clone(), 1, true, 10);
+        let vote_request = signed_vote_request(account.clone(), 1, true, 10);
 
         let poll = glove_state.get_poll(1).await;
 
@@ -529,7 +580,7 @@ mod tests {
         let glove_state = GloveState::default();
         let account_1 = AccountId32::from([1; 32]);
         let account_2 = AccountId32::from([2; 32]);
-        let vote_request = VoteRequest::new(account_1.clone(), 1, true, 10);
+        let vote_request = signed_vote_request(account_1.clone(), 1, true, 10);
 
         let poll = glove_state.get_poll(1).await;
         poll.add_vote_request(vote_request.clone()).await;
@@ -542,8 +593,8 @@ mod tests {
     async fn replace_vote_before_mixing() {
         let glove_state = GloveState::default();
         let account = AccountId32::from([1; 32]);
-        let vote_request_1 = VoteRequest::new(account.clone(), 1, true, 10);
-        let vote_request_2 = VoteRequest::new(account.clone(), 1, true, 20);
+        let vote_request_1 = signed_vote_request(account.clone(), 1, true, 10);
+        let vote_request_2 = signed_vote_request(account.clone(), 1, true, 20);
 
         let poll = glove_state.get_poll(1).await;
 
@@ -561,8 +612,8 @@ mod tests {
         let glove_state = GloveState::default();
         let account_1 = AccountId32::from([1; 32]);
         let account_2 = AccountId32::from([2; 32]);
-        let vote_request_1 = VoteRequest::new(account_1.clone(), 1, true, 10);
-        let vote_request_2 = VoteRequest::new(account_2.clone(), 1, false, 20);
+        let vote_request_1 = signed_vote_request(account_1.clone(), 1, true, 10);
+        let vote_request_2 = signed_vote_request(account_2.clone(), 1, false, 20);
 
         let poll = glove_state.get_poll(1).await;
 
@@ -575,5 +626,11 @@ mod tests {
         assert_eq!(pending_mix, true);
         let vote_requeats = poll.begin_mix().await;
         assert_eq!(vote_requeats, Some(vec![vote_request_1, vote_request_2]));
+    }
+
+    fn signed_vote_request(account: AccountId32, poll_index: u32, aye: bool, balance: u128) -> SignedVoteRequest {
+        let request = VoteRequest::new(account, poll_index, aye, balance);
+        let signature = MultiSignature::Sr25519(sr25519::Signature::default());
+        SignedVoteRequest { request, signature }
     }
 }
