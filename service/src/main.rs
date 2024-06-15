@@ -41,7 +41,7 @@ use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError::P
 use client_interface::metadata::runtime_types::sp_runtime::DispatchError as MetadataDispatchError;
 use client_interface::metadata::storage;
 use client_interface::RemoveVoteRequest;
-use enclave_interface::{MixVotesRequest, MixVotesResult, SignedVoteRequest, VoteMixingResult};
+use enclave_interface::{EnclaveRequest, EnclaveResponse, MixedVotes, SignedVoteRequest};
 use RuntimeError::ConvictionVoting;
 use service::{EnclaveHandle, MockEnclaveHandle};
 use ServiceError::{NotMember, PollNotOngoing, Scale};
@@ -319,9 +319,7 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, Mixi
         return Ok(true);
     };
 
-    let mix_votes_request = MixVotesRequest { requests: poll_requests };
-
-    let vote_mixing_result = mix_votes_in_enclave(&context, &mix_votes_request).await?;
+    let vote_mixing_result = mix_votes_in_enclave(&context, &poll_requests).await?;
     let Some(vote_mixing_result) = vote_mixing_result else {
         // TODO Vote abstain with a minimum balance.
         // TODO Should the enclave produce the extrinic calls structs? It would prove the enclave
@@ -334,7 +332,7 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, Mixi
     let result = submit_mixed_votes_on_chain(
         &context.network,
         poll.index,
-        &mix_votes_request.requests,
+        &poll_requests,
         vote_mixing_result
     ).await;
     if result.is_ok() {
@@ -349,14 +347,14 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, Mixi
             Ok(true)
         }
         ProxyError::Module(batch_index, ConvictionVoting(InsufficientFunds)) => {
-            let request = &mix_votes_request.requests[batch_index].request;
+            let request = &poll_requests[batch_index].request;
             warn!("Insufficient funds for {:?}. Removing it from poll and trying again", request);
             // TODO On-chain vote needs to be removed as well
             poll.remove_vote_request(request.account.clone()).await;
             Ok(false)
         }
         ProxyError::Batch(BatchError::Module(batch_index, Proxy(NotProxy))) => {
-            let request = &mix_votes_request.requests[batch_index].request;
+            let request = &poll_requests[batch_index].request;
             warn!("Account is no longer part of the proxy, removing it from poll and trying again: {:?}", request);
             // TODO How to remove on-chain vote if the account is no longer part of the proxy?
             poll.remove_vote_request(request.account.clone()).await;
@@ -365,7 +363,7 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, Mixi
         proxy_error => {
             if let Some(batch_index) = proxy_error.batch_index() {
                 warn!("Error submitting mixed votes for {:?}: {:?}",
-                    mix_votes_request.requests[batch_index].request, proxy_error)
+                    poll_requests[batch_index].request, proxy_error)
             } else {
                 warn!("Error submitting mixed votes: {:?}", proxy_error)
             }
@@ -374,16 +372,15 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, Mixi
     }
 }
 
-async fn mix_votes_in_enclave(
-    context: &GloveContext,
-    mix_votes_request: &MixVotesRequest
-) -> Result<Option<VoteMixingResult>, MixingError> {
-    let response = context.enclave_handle.send_and_receive(&mix_votes_request.encode()).await?;
-    let mix_votes_result = MixVotesResult::decode_all(&mut response.as_slice());
-    debug!("Mixing result from enclave: {:?}", mix_votes_result);
-    match mix_votes_result {
-        Ok(MixVotesResult { result: Ok(result) }) => Ok(result),
-        Ok(MixVotesResult { result: Err(enclave_error) }) => Err(enclave_error.into()),
+async fn mix_votes_in_enclave(context: &GloveContext,
+    enclave_request: &EnclaveRequest
+) -> Result<Option<MixedVotes>, MixingError> {
+    let response = context.enclave_handle.send_and_receive(&enclave_request.encode()).await?;
+    let enclave_respoonse = EnclaveResponse::decode_all(&mut response.as_slice());
+    debug!("Mixing result from enclave: {:?}", enclave_respoonse);
+    match enclave_respoonse {
+        Ok(Ok(mixed_vote_balances)) => Ok(mixed_vote_balances),
+        Ok(Err(enclave_error)) => Err(enclave_error.into()),
         Err(scale_error) => Err(scale_error.into())
     }
 }
@@ -392,11 +389,11 @@ async fn submit_mixed_votes_on_chain(
     network: &SubstrateNetwork,
     poll_index: u32,
     signed_requests: &Vec<SignedVoteRequest>,
-    vote_mixing_result: VoteMixingResult
+    mixed_votes: MixedVotes
 ) -> Result<(), ProxyError> {
     let proxy_vote_calls = signed_requests
         .iter()
-        .zip(vote_mixing_result.balances)
+        .zip(mixed_votes.balances)
         .map(|(signed_request, mix_balance)| {
             ProxyCall::proxy {
                 real: account_to_address(signed_request.request.account.clone()),
@@ -406,7 +403,7 @@ async fn submit_mixed_votes_on_chain(
                     vote: AccountVote::Standard {
                         // TODO Deal with mixed_balance of zero
                         // TODO conviction multiplier
-                        vote: Vote(if vote_mixing_result.aye { AYE } else { NAY }),
+                        vote: Vote(if mixed_votes.aye { AYE } else { NAY }),
                         balance: mix_balance
                     }
                 })),
@@ -542,6 +539,7 @@ impl IntoResponse for ServiceError {
 mod tests {
     use sp_runtime::MultiSignature;
     use sp_runtime::testing::sr25519;
+
     use common::VoteRequest;
 
     use super::*;

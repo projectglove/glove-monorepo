@@ -1,4 +1,5 @@
 use std::io;
+
 use parity_scale_codec::{Decode, Encode};
 use sp_runtime::MultiSignature;
 use sp_runtime::traits::Verify;
@@ -6,10 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use common::VoteRequest;
 
-#[derive(Debug, Clone, Encode, Decode)]
-pub struct MixVotesRequest {
-    pub requests: Vec<SignedVoteRequest>
-}
+pub type EnclaveRequest = Vec<SignedVoteRequest>;
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct SignedVoteRequest {
@@ -23,15 +21,12 @@ impl SignedVoteRequest {
     }
 }
 
-#[derive(Debug, Clone, Encode, Decode)]
-pub struct MixVotesResult {
-    pub result: Result<Option<VoteMixingResult>, Error>
-}
+pub type EnclaveResponse = Result<Option<MixedVotes>, Error>;
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
-pub struct VoteMixingResult {
+pub struct MixedVotes {
     pub aye: bool,
-    /// The randomized mixed balance for the request at the same index. Note, it's possible for the
+    /// The randomized mixed balance for the request at the same index. Note, it's possible for a
     /// value to be zero.
     pub balances: Vec<u128>
 }

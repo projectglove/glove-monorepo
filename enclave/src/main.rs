@@ -3,7 +3,7 @@ use std::env::args;
 use parity_scale_codec::{DecodeAll, Encode};
 use tokio::net::UnixStream;
 
-use enclave_interface::{Error, MixVotesRequest, MixVotesResult, read_len_prefix_bytes, write_len_prefix_bytes};
+use enclave_interface::{Error, EnclaveResponse, read_len_prefix_bytes, write_len_prefix_bytes, EnclaveRequest};
 
 // The Glove enclave is a simple process which listens for vote mixing requests on a UNIX socket.
 #[tokio::main]
@@ -19,24 +19,19 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-fn process_request(bytes: Vec<u8>) -> MixVotesResult {
-    let request = MixVotesRequest::decode_all(&mut bytes.as_slice());
-    let result = match request {
-        Ok(request) => {
-            println!("ENCLAVE> Received request: {:?}", request);
-            let signatures_valid = request.requests
+fn process_request(bytes: Vec<u8>) -> EnclaveResponse {
+    match EnclaveRequest::decode_all(&mut bytes.as_slice()) {
+        Ok(enclave_request) => {
+            println!("ENCLAVE> Received request: {:?}", enclave_request);
+            let signatures_valid = enclave_request
                 .iter()
                 .all(|signed_request| signed_request.is_signature_valid());
             if signatures_valid {
-                Ok(enclave::mix_votes(&request.requests))
+                Ok(enclave::mix_votes(&enclave_request))
             } else {
                 Err(Error::InvalidSignature)
             }
         }
-        Err(error) => {
-            println!("ENCLAVE> Unable to decode request: {:?}", error);
-            Err(Error::Scale(error.to_string()))
-        },
-    };
-    MixVotesResult { result }
+        Err(scale_error) => Err(Error::Scale(scale_error.to_string())),
+    }
 }

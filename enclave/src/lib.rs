@@ -4,9 +4,9 @@ use bigdecimal::{BigDecimal, ToPrimitive};
 use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
 
-use enclave_interface::{SignedVoteRequest, VoteMixingResult};
+use enclave_interface::{SignedVoteRequest, MixedVotes};
 
-pub fn mix_votes(signed_requests: &Vec<SignedVoteRequest>) -> Option<VoteMixingResult> {
+pub fn mix_votes(signed_requests: &Vec<SignedVoteRequest>) -> Option<MixedVotes> {
     let ayes_balance = signed_requests.iter().filter(|r| r.request.aye).map(|r| r.request.balance).sum::<u128>();
     let nays_balance = signed_requests.iter().filter(|r| !r.request.aye).map(|r| r.request.balance).sum::<u128>();
     let net_balance = ayes_balance.abs_diff(nays_balance);
@@ -54,7 +54,7 @@ pub fn mix_votes(signed_requests: &Vec<SignedVoteRequest>) -> Option<VoteMixingR
         index += 1;
     }
 
-    Some(VoteMixingResult { aye: ayes_balance > nays_balance, balances: net_balances })
+    Some(MixedVotes { aye: ayes_balance > nays_balance, balances: net_balances })
 }
 
 #[cfg(test)]
@@ -76,7 +76,7 @@ mod tests {
     fn single() {
         assert_eq!(
             mix_votes(&vec![vote_request(true, 1u128)]),
-            Some(VoteMixingResult { aye: true, balances: vec![1u128] })
+            Some(MixedVotes { aye: true, balances: vec![1u128] })
         );
     }
 
@@ -98,7 +98,7 @@ mod tests {
                 vote_request(true, 10u128),
                 vote_request(true, 5u128)
             ]),
-            Some(VoteMixingResult { aye: true, balances: vec![10u128, 5u128] })
+            Some(MixedVotes { aye: true, balances: vec![10u128, 5u128] })
         );
     }
 
@@ -109,7 +109,7 @@ mod tests {
                 vote_request(false, 5u128),
                 vote_request(false, 10u128)
             ]),
-            Some(VoteMixingResult { aye: false, balances: vec![5u128, 10u128] })
+            Some(MixedVotes { aye: false, balances: vec![5u128, 10u128] })
         );
     }
 
