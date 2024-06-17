@@ -1,42 +1,69 @@
-use io::ErrorKind::NotFound;
 use std::{env, io};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-use axum::async_trait;
-use tempfile::tempdir;
-use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
-use enclave_interface::{read_len_prefix_bytes, write_len_prefix_bytes};
+use enclave_interface::EnclaveStream;
 
-#[async_trait]
-pub trait EnclaveHandle: Send + Sync {
-    async fn send_and_receive(&self, msg: &[u8]) -> io::Result<Vec<u8>>;
-}
-
-/// A mock enclave which is just the enclave binary running as a normal process connected via a UNIX socket. There is no security
-/// benefit to this implementation, and is only provided for testing purposes.
 #[derive(Clone)]
-pub struct MockEnclaveHandle {
-    stream: Arc<Mutex<UnixStream>>
+pub struct EnclaveHandle {
+    stream: Arc<Mutex<EnclaveStream>>
 }
 
-impl MockEnclaveHandle {
-    pub async fn spawn() -> io::Result<Self> {
+impl EnclaveHandle {
+    pub async fn send_and_receive(&self, msg: &[u8]) -> io::Result<Vec<u8>> {
+        let mut stream = self.stream.lock().await;
+        stream.write_len_prefix_bytes(msg).await?;
+        stream.read_len_prefix_bytes().await
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub mod aws_nitro_enclave {
+    use nix::sys::socket::VsockAddr;
+    use tokio_vsock::VsockStream;
+
+    use enclave_interface::{NITRO_ENCLAVE_CID, NITRO_ENCLAVE_PORT};
+
+    use super::*;
+
+    /// Connects to an AWS Nitro enclave via a VSOCK connection.
+    pub async fn connect() -> io::Result<EnclaveHandle> {
+        info!("Connecting to AWS Nitro enclave...");
+        let address = VsockAddr::new(NITRO_ENCLAVE_CID, NITRO_ENCLAVE_PORT);
+        let stream = VsockStream::connect(address).await?;
+        info!("Connected to AWS Nitro enclave");
+        Ok(EnclaveHandle { stream: Arc::new(Mutex::new(EnclaveStream::Vsock(stream))) })
+    }
+}
+
+/// A mock enclave which is just the enclave binary running as a normal process connected via a
+/// UNIX socket. There is no security benefit to this implementation, and is only provided for
+/// testing purposes.
+pub mod mock_enclave {
+    use io::ErrorKind::NotFound;
+
+    use tempfile::tempdir;
+    use tokio::net::UnixListener;
+
+    use super::*;
+
+    /// Spawns a new mock enclave process and connects to it via a UNIX socket.
+    pub async fn spawn() -> io::Result<EnclaveHandle> {
         let temp_dir = tempdir()?;
         let socket_file = temp_dir.path().join("glove.sock");
         let listener = UnixListener::bind(socket_file.clone())?;
-        let mut cmd = Command::new(Self::enclave_exec()?);
+        let mut cmd = Command::new(enclave_exec()?);
         cmd.arg(socket_file);
         debug!("Mock enclave cmd: {:?}", cmd);
         let process = cmd.spawn()?;
         info!("Mock enclave process started: {}", process.id());
         let (stream, _) = listener.accept().await?;
         info!("Mock enclave connection established");
-        Ok(Self { stream: Arc::new(Mutex::new(stream)) })
+        Ok(EnclaveHandle { stream: Arc::new(Mutex::new(EnclaveStream::Unix(stream))) })
     }
 
     fn enclave_exec() -> io::Result<PathBuf> {
@@ -50,14 +77,5 @@ impl MockEnclaveHandle {
                 NotFound,
                 "Enclave executable not in the same directory as the service executable",
             ))
-    }
-}
-
-#[async_trait]
-impl EnclaveHandle for MockEnclaveHandle {
-    async fn send_and_receive(&self, msg: &[u8]) -> io::Result<Vec<u8>> {
-        let mut stream = self.stream.lock().await;
-        write_len_prefix_bytes(&mut *stream, msg).await?;
-        read_len_prefix_bytes(&mut *stream).await
     }
 }

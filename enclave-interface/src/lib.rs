@@ -7,6 +7,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use common::VoteRequest;
 
+/// Well-known CID of the enclave instance.
+pub const NITRO_ENCLAVE_CID: u32 = 5000;
+
+/// Well-known VSOCK port the enclave process will listen on.
+pub const NITRO_ENCLAVE_PORT: u32 = 5000;
+
 pub type EnclaveRequest = Vec<SignedVoteRequest>;
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
@@ -31,7 +37,31 @@ pub struct MixedVotes {
     pub balances: Vec<u128>
 }
 
-pub async fn write_len_prefix_bytes<W>(writer: &mut W, bytes: &[u8]) -> Result<(), io::Error>
+pub enum EnclaveStream {
+    #[cfg(target_os = "linux")]
+    Vsock(tokio_vsock::VsockStream),
+    Unix(tokio::net::UnixStream)
+}
+
+impl EnclaveStream {
+    pub async fn write_len_prefix_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
+        match self {
+            #[cfg(target_os = "linux")]
+            EnclaveStream::Vsock(stream) => write_len_prefix_bytes(stream, bytes).await,
+            EnclaveStream::Unix(stream) => write_len_prefix_bytes(stream, bytes).await
+        }
+    }
+
+    pub async fn read_len_prefix_bytes(&mut self) -> io::Result<Vec<u8>> {
+        match self {
+            #[cfg(target_os = "linux")]
+            EnclaveStream::Vsock(stream) => read_len_prefix_bytes(stream).await,
+            EnclaveStream::Unix(stream) => read_len_prefix_bytes(stream).await
+        }
+    }
+}
+
+async fn write_len_prefix_bytes<W>(writer: &mut W, bytes: &[u8]) -> io::Result<()>
 where
     W: AsyncWriteExt + Unpin
 {
@@ -41,7 +71,7 @@ where
     Ok(())
 }
 
-pub async fn read_len_prefix_bytes<R>(reader: &mut R) -> Result<Vec<u8>, io::Error>
+async fn read_len_prefix_bytes<R>(reader: &mut R) -> io::Result<Vec<u8>>
 where
     R: AsyncReadExt + Unpin
 {

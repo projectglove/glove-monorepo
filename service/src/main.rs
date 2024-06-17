@@ -8,6 +8,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use axum::routing::{get, post};
+use cfg_if::cfg_if;
 use clap::Parser;
 use itertools::Itertools;
 use parity_scale_codec::{DecodeAll, Encode, Error as ScaleError};
@@ -43,7 +44,7 @@ use client_interface::metadata::storage;
 use client_interface::RemoveVoteRequest;
 use enclave_interface::{EnclaveRequest, EnclaveResponse, MixedVotes, SignedVoteRequest};
 use RuntimeError::ConvictionVoting;
-use service::{EnclaveHandle, MockEnclaveHandle};
+use service::EnclaveHandle;
 use ServiceError::{NotMember, PollNotOngoing, Scale};
 use ServiceError::InsufficientBalance;
 use ServiceError::InvalidRequestSignature;
@@ -62,7 +63,12 @@ struct Args {
     ///
     /// See https://wiki.polkadot.network/docs/maintain-endpoints for more information.
     #[arg(long)]
-    network_url: String
+    network_url: String,
+
+    #[cfg(target_os = "linux")]
+    /// Use an insecure mock enclave, instead of an AWS Nitro enclave, for testing purposes.
+    #[arg(long, default_value_t = false)]
+    mock: bool
 }
 
 // TODO Listen, or poll, for any member who votes directly
@@ -81,12 +87,23 @@ async fn main() -> anyhow::Result<()> {
     let network = SubstrateNetwork::connect(args.network_url, args.proxy_secret_phrase).await?;
     info!("Connected to Substrate network: {}", network.url);
 
-    warn!("Starting mock enclave, which is insecure");
-    let mock_enclave_handle = MockEnclaveHandle::spawn().await?;
+    cfg_if! {
+        if #[cfg(target_os = "linux")] {
+            let enclave_handle = if !args.mock {
+                service::aws_nitro_enclave::connect().await?
+            } else {
+                warn!("Starting insecure mock enclave instead of AWS Nitro");
+                service::mock_enclave::spawn().await?
+            };
+        } else {
+            warn!("This is a non-Linux system and so only insecure mock enclaves are supported");
+            let enclave_handle = service::mock_enclave::spawn().await?;
+        }
+    }
 
     let glove_context = Arc::new(GloveContext {
         network,
-        enclave_handle: Box::new(mock_enclave_handle),
+        enclave_handle,
         state: GloveState::default()
     });
 
@@ -104,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
 
 struct GloveContext {
     network: SubstrateNetwork,
-    enclave_handle: Box<dyn EnclaveHandle>,
+    enclave_handle: EnclaveHandle,
     state: GloveState
 }
 

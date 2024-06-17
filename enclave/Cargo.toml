@@ -11,6 +11,11 @@ rand.workspace = true
 anyhow.workspace = true
 parity-scale-codec.workspace = true
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
+cfg-if.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio-vsock.workspace = true
+nix = { workspace = true, features = ["socket"] }
 
 [dev-dependencies]
 sp-core.workspace = true

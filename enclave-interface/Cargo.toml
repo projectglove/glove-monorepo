@@ -10,3 +10,7 @@ parity-scale-codec.workspace = true
 sp-runtime.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio-vsock.workspace = true
+nix = { workspace = true, features = ["socket"] }
