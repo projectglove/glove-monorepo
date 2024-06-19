@@ -31,8 +31,9 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(target_os = "linux")]
 async fn establish_vsock_connection() -> io::Result<EnclaveStream> {
-    // The CID used by the parent AWS host instance is always 3
-    let address = nix::sys::socket::VsockAddr::new(3, enclave_interface::NITRO_ENCLAVE_PORT);
+    use enclave_interface::{NITRO_ENCLAVE_CID, NITRO_ENCLAVE_PORT};
+
+    let address = nix::sys::socket::VsockAddr::new(NITRO_ENCLAVE_CID, NITRO_ENCLAVE_PORT);
     let mut listener = tokio_vsock::VsockListener::bind(address)?;
     println!("ENCLAVE> Waiting for VSOCK connection from AWS host VM...");
     let (stream, _) = listener.accept().await?;

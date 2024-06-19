@@ -73,6 +73,20 @@ struct Args {
 
 // TODO Listen, or poll, for any member who votes directly
 
+// TODO Deal with RPC disconnect:
+// 2024-06-19T11:36:12.533696Z DEBUG rustls::common_state: Sending warning alert CloseNotify
+// 2024-06-19T11:36:12.533732Z DEBUG soketto::connection: 2d71fa53: cannot receive, connection is closed
+// 2024-06-19T11:36:12.533743Z DEBUG jsonrpsee-client: Failed to read message: connection closed
+// 2024-06-19T11:41:41.247725Z DEBUG request{method=GET uri=/info version=HTTP/1.1}: tower_http::trace::on_request: started processing request
+// 2024-06-19T11:41:41.247763Z DEBUG request{method=GET uri=/info version=HTTP/1.1}: tower_http::trace::on_response: finished processing request latency=0 ms status=200
+// 2024-06-19T11:41:42.195777Z DEBUG request{method=POST uri=/vote version=HTTP/1.1}: tower_http::trace::on_request: started processing request
+// 2024-06-19T11:41:42.195924Z  WARN request{method=POST uri=/vote version=HTTP/1.1}: service: Subxt(Rpc(ClientError(RestartNeeded(Transport(connection closed
+//
+// Caused by:
+// connection closed)))))
+// 2024-06-19T11:41:42.195944Z DEBUG request{method=POST uri=/vote version=HTTP/1.1}: tower_http::trace::on_response: finished processing request latency=0 ms status=500
+// 2024-06-19T11:41:42.195957Z ERROR request{method=POST uri=/vote version=HTTP/1.1}: tower_http::trace::on_failure: response failed classification=Status code: 500 Internal Server Error latency=0 ms
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let filter = EnvFilter::try_new("subxt_core::events=info")?
@@ -322,6 +336,7 @@ async fn mix_votes(context: &GloveContext, poll: &Poll) {
             Ok(true) => break,
             Ok(false) => continue,
             Err(mixing_error) => {
+                // TODO Reconnect on NotConnected IO error: Io(Os { code: 107, kind: NotConnected, message: "Transport endpoint is not connected" })
                 warn!("Error mixing votes: {:?}", mixing_error);
                 break;
             }
