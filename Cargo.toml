@@ -13,6 +13,8 @@ subxt-core = { version = "0.37.0", features = ["substrate-compat"] }
 subxt-signer = { version = "0.37.0", features = ["subxt"] }
 thiserror = "1.0.61"
 serde = { version = "1.0.203", features = ["derive"] }
+serde_json = "1.0.117"
+serde_cbor = "0.11.2"
 serde_with = { version = "3.8.1", features = ["base64"] }
 parity-scale-codec = "3.6.12"
 bigdecimal = "0.4.3"
@@ -20,7 +22,6 @@ clap = { version = "4.5.4", features = ["derive"] }
 tokio = { version = "1.37.0" }
 reqwest = { version = "0.12.4", features = ["json"] }
 strum = { version = "0.26.2", features = ["derive"] }
-serde_json = "1.0.117"
 base64 = "0.22.1"
 axum = "0.7.5"
 itertools = "0.13.0"
@@ -31,4 +32,6 @@ tempfile = "3.2.0"
 tokio-vsock = "0.5.0"
 nix = "0.27.1"
 cfg-if = "1.0.0"
-
+aws-nitro-enclaves-nsm-api = "0.4.0"
+aws-nitro-enclaves-cose = "0.5.2"
+x509-parser = "0.16.0"

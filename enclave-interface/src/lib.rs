@@ -1,6 +1,6 @@
 use std::io;
 
-use parity_scale_codec::{Decode, Encode};
+use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use sp_runtime::MultiSignature;
 use sp_runtime::traits::Verify;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -13,9 +13,13 @@ pub const NITRO_ENCLAVE_CID: u32 = 5000;
 /// Well-known VSOCK port the enclave process will listen on.
 pub const NITRO_ENCLAVE_PORT: u32 = 5000;
 
-pub type EnclaveRequest = Vec<SignedVoteRequest>;
+#[derive(Debug, Clone, Encode, Decode)]
+pub enum EnclaveRequest {
+    AttestationDoc,
+    MixVotes(Vec<SignedVoteRequest>),
+}
 
-#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
 pub struct SignedVoteRequest {
     pub request: VoteRequest,
     pub signature: MultiSignature
@@ -27,7 +31,12 @@ impl SignedVoteRequest {
     }
 }
 
-pub type EnclaveResponse = Result<Option<MixedVotes>, Error>;
+#[derive(Debug, Clone, Encode, Decode)]
+pub enum EnclaveResponse {
+    AttestationDoc(AttestationDoc),
+    MixingResult(Option<MixedVotes>),
+    Error(Error)
+}
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct MixedVotes {
@@ -35,6 +44,13 @@ pub struct MixedVotes {
     /// The randomized mixed balance for the request at the same index. Note, it's possible for a
     /// value to be zero.
     pub balances: Vec<u128>
+}
+
+#[derive(Debug, Clone, Encode, Decode)]
+pub enum AttestationDoc {
+    Nitro(Vec<u8>),
+    /// Marker to indicate mock enclaves do not have attestation.
+    Mock
 }
 
 pub enum EnclaveStream {
@@ -86,5 +102,5 @@ pub enum Error {
     #[error("Invalid signature")]
     InvalidSignature,
     #[error("Scale decoding error: {0}")]
-    Scale(String)
+    Scale(String),
 }

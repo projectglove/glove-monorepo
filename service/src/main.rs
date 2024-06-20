@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,7 +12,7 @@ use axum::routing::{get, post};
 use cfg_if::cfg_if;
 use clap::Parser;
 use itertools::Itertools;
-use parity_scale_codec::{DecodeAll, Encode, Error as ScaleError};
+use parity_scale_codec::Error as ScaleError;
 use sp_runtime::AccountId32;
 use subxt::Error as SubxtError;
 use subxt_signer::sr25519::Keypair;
@@ -43,6 +44,8 @@ use client_interface::metadata::runtime_types::sp_runtime::DispatchError as Meta
 use client_interface::metadata::storage;
 use client_interface::RemoveVoteRequest;
 use enclave_interface::{EnclaveRequest, EnclaveResponse, MixedVotes, SignedVoteRequest};
+use enclave_interface::AttestationDoc::Mock;
+use enclave_interface::AttestationDoc::Nitro;
 use RuntimeError::ConvictionVoting;
 use service::EnclaveHandle;
 use ServiceError::{NotMember, PollNotOngoing, Scale};
@@ -68,7 +71,11 @@ struct Args {
     #[cfg(target_os = "linux")]
     /// Use an insecure mock enclave, instead of an AWS Nitro enclave, for testing purposes.
     #[arg(long, default_value_t = false)]
-    mock: bool
+    mock: bool,
+
+    /// Export the enclave's attestation info to the given file path and then exit.
+    #[arg(long, value_name = "FILE")]
+    export_attestation_info: Option<PathBuf>
 }
 
 // TODO Listen, or poll, for any member who votes directly
@@ -87,6 +94,7 @@ struct Args {
 // 2024-06-19T11:41:42.195944Z DEBUG request{method=POST uri=/vote version=HTTP/1.1}: tower_http::trace::on_response: finished processing request latency=0 ms status=500
 // 2024-06-19T11:41:42.195957Z ERROR request{method=POST uri=/vote version=HTTP/1.1}: tower_http::trace::on_failure: response failed classification=Status code: 500 Internal Server Error latency=0 ms
 
+// TODO Start enclave with host.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let filter = EnvFilter::try_new("subxt_core::events=info")?
@@ -97,9 +105,6 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
-
-    let network = SubstrateNetwork::connect(args.network_url, args.proxy_secret_phrase).await?;
-    info!("Connected to Substrate network: {}", network.url);
 
     cfg_if! {
         if #[cfg(target_os = "linux")] {
@@ -114,6 +119,24 @@ async fn main() -> anyhow::Result<()> {
             let enclave_handle = service::mock_enclave::spawn().await?;
         }
     }
+
+    if let Some(export_path) = args.export_attestation_info {
+        let response = enclave_handle.send_request(&EnclaveRequest::AttestationDoc).await?;
+        return match response {
+            EnclaveResponse::AttestationDoc(Nitro(bytes)) => {
+                std::fs::write(export_path, bytes)?;
+                Ok(())
+            }
+            EnclaveResponse::AttestationDoc(Mock) => {
+                info!("Mock enclave does not have an attestation");
+                Ok(())
+            }
+            _ => Err(anyhow::anyhow!("Unexpected response from enclave: {:?}", response))?
+        }
+    }
+
+    let network = SubstrateNetwork::connect(args.network_url, args.proxy_secret_phrase).await?;
+    info!("Connected to Substrate network: {}", network.url);
 
     let glove_context = Arc::new(GloveContext {
         network,
@@ -404,16 +427,17 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, Mixi
     }
 }
 
-async fn mix_votes_in_enclave(context: &GloveContext,
-    enclave_request: &EnclaveRequest
+async fn mix_votes_in_enclave(
+    context: &GloveContext,
+    vote_requests: &Vec<SignedVoteRequest>
 ) -> Result<Option<MixedVotes>, MixingError> {
-    let response = context.enclave_handle.send_and_receive(&enclave_request.encode()).await?;
-    let enclave_respoonse = EnclaveResponse::decode_all(&mut response.as_slice());
-    debug!("Mixing result from enclave: {:?}", enclave_respoonse);
-    match enclave_respoonse {
-        Ok(Ok(mixed_vote_balances)) => Ok(mixed_vote_balances),
-        Ok(Err(enclave_error)) => Err(enclave_error.into()),
-        Err(scale_error) => Err(scale_error.into())
+    let request = EnclaveRequest::MixVotes(vote_requests.clone());
+    let response = context.enclave_handle.send_request(&request).await?;
+    debug!("Mixing result from enclave: {:?}", response);
+    match response {
+        EnclaveResponse::MixingResult(mixing_result) => Ok(mixing_result),
+        EnclaveResponse::Error(enclave_error) => Err(enclave_error.into()),
+        _ => Err(MixingError::UnexpectedResponse(response)),
     }
 }
 
@@ -505,8 +529,8 @@ pub enum MixingError {
     Io(#[from] io::Error),
     #[error("Enclave error: {0}")]
     Enclave(#[from] enclave_interface::Error),
-    #[error("Scale decoding error: {0}")]
-    Scale(#[from] ScaleError)
+    #[error("Unexpected response from enclave: {0:?}")]
+    UnexpectedResponse(EnclaveResponse)
 }
 
 #[derive(thiserror::Error, Debug)]

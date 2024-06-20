@@ -3,10 +3,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+use parity_scale_codec::{DecodeAll, Encode};
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
-use enclave_interface::EnclaveStream;
+use enclave_interface::{EnclaveRequest, EnclaveResponse, EnclaveStream};
 
 #[derive(Clone)]
 pub struct EnclaveHandle {
@@ -14,10 +15,13 @@ pub struct EnclaveHandle {
 }
 
 impl EnclaveHandle {
-    pub async fn send_and_receive(&self, msg: &[u8]) -> io::Result<Vec<u8>> {
+    pub async fn send_request(&self, request: &EnclaveRequest) -> io::Result<EnclaveResponse> {
         let mut stream = self.stream.lock().await;
-        stream.write_len_prefix_bytes(msg).await?;
-        stream.read_len_prefix_bytes().await
+        stream.write_len_prefix_bytes(&request.encode()).await?;
+        let encoded_response = stream.read_len_prefix_bytes().await?;
+        let response = EnclaveResponse::decode_all(&mut encoded_response.as_slice())
+            .map_err(|scale_error| io::Error::new(io::ErrorKind::InvalidData, scale_error))?;
+        Ok(response)
     }
 }
 

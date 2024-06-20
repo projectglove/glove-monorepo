@@ -16,6 +16,7 @@ cfg-if.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-vsock.workspace = true
 nix = { workspace = true, features = ["socket"] }
+aws-nitro-enclaves-nsm-api.workspace = true
 
 [dev-dependencies]
 sp-core.workspace = true

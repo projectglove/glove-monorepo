@@ -23,11 +23,7 @@ Build the service binary and enclave image:
 ```shell
 git clone https://github.com/projectglove/glove-monorepo.git
 cd glove-monorepo
-cargo build -p service --release
-cargo build -p enclave --release
-cp target/release/enclave target
-docker build -t glove-enclave -f enclave/Dockerfile .
-nitro-cli build-enclave --docker-uri glove-enclave --output-file target/glove.eif
+./build-service-enclave.sh
 ```
 
 ```
@@ -47,7 +43,7 @@ Take note of the `PCR0` value, which is a measurement of the enclave image.
 Start the enclave:
 
 ```shell
-nitro-cli run-enclave --cpu-count 2 --memory 1024 --enclave-cid 5000 --eif-path target/glove.eif
+./start-enclave.sh
 ```
 
 Check the enclave is running with:
@@ -59,7 +55,7 @@ nitro-cli describe-enclaves
 If the enclave fails to start or you want to view its logs, start it in debug mode:
 
 ```shell
-nitro-cli run-enclave --cpu-count 2 --memory 1024 --enclave-cid 5000 --eif-path target/glove.eif --debug-mode && nitro-cli console --enclave-name glove
+nitro-cli run-enclave --cpu-count 2 --memory 1024 --enclave-cid 5000 --eif-path target/glove.eif --debug-mode --attach-console
 ```
 
 > [!WARNING]
@@ -80,6 +76,8 @@ target/release/service --proxy-secret-phrase=<SECRET PHRASE> --network-url=<URL>
 Run with `--help` to see example network endpoints for various chains.
 
 For now the service is hard-coded to listen on `localhost:8080`, which will be fixed.
+
+Killing the service will also terminate the enclave.
 
 Building the client CLI:
 
