@@ -36,22 +36,32 @@ pub mod aws_nitro_enclave {
     use super::*;
 
     /// Starts the AWS Nitro enclave and waits for it to connect via VSOCK.
-    pub async fn connect() -> io::Result<EnclaveHandle> {
+    pub async fn connect(debug_mode: bool) -> io::Result<EnclaveHandle> {
         let mut listener = VsockListener::bind(VsockAddr::new(NITRO_HOST_CID, NITRO_PORT))?;
         let mut cmd = Command::new("nitro-cli");
         cmd.arg("run-enclave");
         cmd.arg("--cpu-count").arg("2");
         cmd.arg("--memory").arg("1024");
         cmd.arg("--eif-path").arg(local_file("glove.eif")?);
-        debug!("AWS Nitro enclave cmd: {:?}", cmd);
-        let output = cmd.output()?;
-        if !output.status.success() {
-            return Err(IoError::new(
-                ErrorKind::Other,
-                format!("Failed to start AWS Nitro enclave: {:?}", output))
-            );
+        if debug_mode {
+            cmd.arg("--debug-mode");
+            cmd.arg("--attach-console");
         }
-        debug!("AWS Nitro enclave started: {:?}", output);
+        debug!("AWS Nitro enclave cmd: {:?}", cmd);
+        if debug_mode {
+            let process = cmd.spawn()?;
+            debug!("Process to start AWS Nitro enclave, and capture its output, started: {}",
+                process.id());
+        } else {
+            let output = cmd.output()?;
+            if !output.status.success() {
+                return Err(IoError::new(
+                    ErrorKind::Other,
+                    format!("Failed to start AWS Nitro enclave: {:?}", output))
+                );
+            }
+            debug!("AWS Nitro enclave started: {:?}", output);
+        }
         let (stream, _) = listener.accept().await?;
         info!("AWS Nitro enclave connection established");
         Ok(EnclaveHandle { stream: Arc::new(Mutex::new(EnclaveStream::Vsock(stream))) })

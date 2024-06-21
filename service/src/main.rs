@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Router;
 use axum::routing::{get, post};
 use cfg_if::cfg_if;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use itertools::Itertools;
 use parity_scale_codec::Error as ScaleError;
 use sp_runtime::AccountId32;
@@ -68,14 +68,23 @@ struct Args {
     #[arg(long)]
     network_url: String,
 
-    #[cfg(target_os = "linux")]
-    /// Use an insecure mock enclave, instead of an AWS Nitro enclave, for testing purposes.
-    #[arg(long, default_value_t = false)]
-    mock: bool,
+    /// Which mode the Glove enclave should run in.
+    #[arg(long, value_enum, default_value_t = EnclaveMode::Nitro)]
+    enclave_mode: EnclaveMode,
 
     /// Export the enclave's attestation info to the given file path and then exit.
     #[arg(long, value_name = "FILE")]
     export_attestation_info: Option<PathBuf>
+}
+
+#[derive(ValueEnum, Debug, Clone)]
+enum EnclaveMode {
+    /// Run the enclave inside a AWS Nitro enclave environment.
+    Nitro,
+    /// Run the AWS Nitro enclave in debug mode. Note, this is insecure.
+    Debug,
+    /// Run the enclave as a normal process. Note, this is insecure.
+    Mock
 }
 
 // TODO Listen, or poll, for any member who votes directly
@@ -105,19 +114,31 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    cfg_if! {
-        if #[cfg(target_os = "linux")] {
-            let enclave_handle = if !args.mock {
-                service::aws_nitro_enclave::connect().await?
-            } else {
-                warn!("Starting insecure mock enclave instead of AWS Nitro");
-                service::mock_enclave::spawn().await?
-            };
-        } else {
-            warn!("This is a non-Linux system and so only insecure mock enclaves are supported");
-            let enclave_handle = service::mock_enclave::spawn().await?;
+    let enclave_handle = match args.enclave_mode {
+        EnclaveMode::Nitro => {
+            cfg_if! {
+                if #[cfg(target_os = "linux")] {
+                    service::aws_nitro_enclave::connect(false).await?
+                } else {
+                    anyhow::bail!("AWS Nitro enclaves are only supported on Linux");
+                }
+            }
         }
-    }
+        EnclaveMode::Debug => {
+            cfg_if! {
+                if #[cfg(target_os = "linux")] {
+                    warn!("Starting the enclave in debug mode, which is insecure");
+                    service::aws_nitro_enclave::connect(true).await?
+                } else {
+                    anyhow::bail!("AWS Nitro enclaves are only supported on Linux");
+                }
+            }
+        }
+        EnclaveMode::Mock => {
+            warn!("Starting the enclave in mock mode, which is insecure");
+            service::mock_enclave::spawn().await?
+        }
+    };
 
     if let Some(export_path) = args.export_attestation_info {
         let response = enclave_handle.send_request(&EnclaveRequest::AttestationDoc).await?;
@@ -367,7 +388,7 @@ async fn mix_votes(context: &GloveContext, poll: &Poll) {
 }
 
 async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, MixingError> {
-    info!("Mixing votes for poll {}:", poll.index);
+    info!("Mixing votes for poll {}", poll.index);
     let Some(poll_requests) = poll.begin_mix().await else {
         // Another task has already started mixing the votes
         return Ok(true);

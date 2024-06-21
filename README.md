@@ -38,8 +38,7 @@ Enclave Image successfully created.
 
 Take note of the `PCR0` value, which is a measurement of the enclave image.
 
-Start the service, which will also start the enclave and connect to it. Killing the service will also terminate the
-enclave.
+Start the service, which will also start the enclave and connect to it. Killing the service will terminate the enclave.
 
 ```shell
 target/release/service --proxy-secret-phrase=<SECRET PHRASE> --network-url=<URL>
@@ -49,17 +48,14 @@ Run with `--help` to see example network endpoints for various chains.
 
 For now the service is hard-coded to listen on `localhost:8080`, which will be fixed.
 
-Check the enclave is running with:
+You can check the enclave is running with:
 
 ```shell
 nitro-cli describe-enclaves
 ```
 
-If the enclave fails to start or you want to view its logs, start it in debug mode:
-
-```shell
-nitro-cli run-enclave --cpu-count 2 --memory 1024 --enclave-cid 5000 --eif-path target/release/glove.eif --debug-mode --attach-console
-```
+If the enclave fails to start or you want to view its logs, start the service with `--enclave-mode=debug` which will 
+start the enclave in debug mode and output to the console.
 
 > [!WARNING]
 > Debug mode is not secure and will be reflected in the enclave's remote attestation. Do not enable this in production.
