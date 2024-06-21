@@ -2,7 +2,7 @@ use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use rand::random;
 use sp_core::crypto::AccountId32;
 
-// mod attestation;
+mod attestation;
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
 pub struct VoteRequest {
