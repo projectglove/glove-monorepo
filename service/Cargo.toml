@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-common = { path = "../common" }
+common = { path = "../common", features = ["attestation"] }
 enclave-interface = { path = "../enclave-interface" }
 client-interface = { path = "../client-interface" }
 anyhow.workspace = true
