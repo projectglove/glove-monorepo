@@ -21,8 +21,6 @@ Log out and back in again.
 Build the service binary and enclave image:
 
 ```shell
-git clone https://github.com/projectglove/glove-monorepo.git
-cd glove-monorepo
 ./build-service-enclave.sh
 ```
 
@@ -40,11 +38,16 @@ Enclave Image successfully created.
 
 Take note of the `PCR0` value, which is a measurement of the enclave image.
 
-Start the enclave:
+Start the service, which will also start the enclave and connect to it. Killing the service will also terminate the
+enclave.
 
 ```shell
-./start-enclave.sh
+target/release/service --proxy-secret-phrase=<SECRET PHRASE> --network-url=<URL>
 ```
+
+Run with `--help` to see example network endpoints for various chains.
+
+For now the service is hard-coded to listen on `localhost:8080`, which will be fixed.
 
 Check the enclave is running with:
 
@@ -55,29 +58,11 @@ nitro-cli describe-enclaves
 If the enclave fails to start or you want to view its logs, start it in debug mode:
 
 ```shell
-nitro-cli run-enclave --cpu-count 2 --memory 1024 --enclave-cid 5000 --eif-path target/glove.eif --debug-mode --attach-console
+nitro-cli run-enclave --cpu-count 2 --memory 1024 --enclave-cid 5000 --eif-path target/release/glove.eif --debug-mode --attach-console
 ```
 
 > [!WARNING]
 > Debug mode is not secure and will be reflected in the enclave's remote attestation. Do not enable this in production.
-
-The enclave can be shutdown with:
-
-```shell
-nitro-cli terminate-enclave --enclave-name glove
-```
-
-Start the service:
-
-```shell
-target/release/service --proxy-secret-phrase=<SECRET PHRASE> --network-url=<URL>
-```
-
-Run with `--help` to see example network endpoints for various chains.
-
-For now the service is hard-coded to listen on `localhost:8080`, which will be fixed.
-
-Killing the service will also terminate the enclave.
 
 Building the client CLI:
 

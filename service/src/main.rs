@@ -94,7 +94,6 @@ struct Args {
 // 2024-06-19T11:41:42.195944Z DEBUG request{method=POST uri=/vote version=HTTP/1.1}: tower_http::trace::on_response: finished processing request latency=0 ms status=500
 // 2024-06-19T11:41:42.195957Z ERROR request{method=POST uri=/vote version=HTTP/1.1}: tower_http::trace::on_failure: response failed classification=Status code: 500 Internal Server Error latency=0 ms
 
-// TODO Start enclave with host.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let filter = EnvFilter::try_new("subxt_core::events=info")?

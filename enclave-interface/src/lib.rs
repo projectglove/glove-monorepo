@@ -7,11 +7,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use common::VoteRequest;
 
-/// Well-known CID of the enclave instance.
-pub const NITRO_ENCLAVE_CID: u32 = 5000;
+/// The parent EC2 instance always has a CID of 3.
+pub const NITRO_HOST_CID: u32 = 3;
 
 /// Well-known VSOCK port the enclave process will listen on.
-pub const NITRO_ENCLAVE_PORT: u32 = 5000;
+pub const NITRO_PORT: u32 = 5000;
 
 #[derive(Debug, Clone, Encode, Decode)]
 pub enum EnclaveRequest {

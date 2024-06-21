@@ -1,3 +1,4 @@
+use io::{Error as IoError, ErrorKind};
 use std::{env, io};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,7 +21,7 @@ impl EnclaveHandle {
         stream.write_len_prefix_bytes(&request.encode()).await?;
         let encoded_response = stream.read_len_prefix_bytes().await?;
         let response = EnclaveResponse::decode_all(&mut encoded_response.as_slice())
-            .map_err(|scale_error| io::Error::new(io::ErrorKind::InvalidData, scale_error))?;
+            .map_err(|scale_error| IoError::new(ErrorKind::InvalidData, scale_error))?;
         Ok(response)
     }
 }
@@ -28,18 +29,31 @@ impl EnclaveHandle {
 #[cfg(target_os = "linux")]
 pub mod aws_nitro_enclave {
     use nix::sys::socket::VsockAddr;
-    use tokio_vsock::VsockStream;
+    use tokio_vsock::VsockListener;
 
-    use enclave_interface::{NITRO_ENCLAVE_CID, NITRO_ENCLAVE_PORT};
+    use enclave_interface::{NITRO_HOST_CID, NITRO_PORT};
 
     use super::*;
 
-    /// Connects to an AWS Nitro enclave via a VSOCK connection.
+    /// Starts the AWS Nitro enclave and waits for it to connect via VSOCK.
     pub async fn connect() -> io::Result<EnclaveHandle> {
-        info!("Connecting to AWS Nitro enclave...");
-        let address = VsockAddr::new(NITRO_ENCLAVE_CID, NITRO_ENCLAVE_PORT);
-        let stream = VsockStream::connect(address).await?;
-        info!("Connected to AWS Nitro enclave");
+        let mut listener = VsockListener::bind(VsockAddr::new(NITRO_HOST_CID, NITRO_PORT))?;
+        let mut cmd = Command::new("nitro-cli");
+        cmd.arg("run-enclave");
+        cmd.arg("--cpu-count").arg("2");
+        cmd.arg("--memory").arg("1024");
+        cmd.arg("--eif-path").arg(local_file("glove.eif")?);
+        debug!("AWS Nitro enclave cmd: {:?}", cmd);
+        let output = cmd.output()?;
+        if !output.status.success() {
+            return Err(IoError::new(
+                ErrorKind::Other,
+                format!("Failed to start AWS Nitro enclave: {:?}", output))
+            );
+        }
+        debug!("AWS Nitro enclave started: {:?}", output);
+        let (stream, _) = listener.accept().await?;
+        info!("AWS Nitro enclave connection established");
         Ok(EnclaveHandle { stream: Arc::new(Mutex::new(EnclaveStream::Vsock(stream))) })
     }
 }
@@ -48,8 +62,6 @@ pub mod aws_nitro_enclave {
 /// UNIX socket. There is no security benefit to this implementation, and is only provided for
 /// testing purposes.
 pub mod mock_enclave {
-    use io::ErrorKind::NotFound;
-
     use tempfile::tempdir;
     use tokio::net::UnixListener;
 
@@ -60,26 +72,24 @@ pub mod mock_enclave {
         let temp_dir = tempdir()?;
         let socket_file = temp_dir.path().join("glove.sock");
         let listener = UnixListener::bind(socket_file.clone())?;
-        let mut cmd = Command::new(enclave_exec()?);
+        let mut cmd = Command::new(local_file("enclave")?);
         cmd.arg(socket_file);
         debug!("Mock enclave cmd: {:?}", cmd);
         let process = cmd.spawn()?;
-        info!("Mock enclave process started: {}", process.id());
+        debug!("Mock enclave process started: {}", process.id());
         let (stream, _) = listener.accept().await?;
         info!("Mock enclave connection established");
         Ok(EnclaveHandle { stream: Arc::new(Mutex::new(EnclaveStream::Unix(stream))) })
     }
+}
 
-    fn enclave_exec() -> io::Result<PathBuf> {
-        env::args()
-            .nth(0)
-            .map(|exe| {
-                Path::new(&exe).parent().unwrap_or(Path::new("/")).join("enclave").to_path_buf()
-            })
-            .filter(|path| path.exists())
-            .ok_or_else(|| io::Error::new(
-                NotFound,
-                "Enclave executable not in the same directory as the service executable",
-            ))
-    }
+fn local_file(file: &str) -> io::Result<PathBuf> {
+    env::args()
+        .nth(0)
+        .map(|exe| Path::new(&exe).parent().unwrap_or(Path::new("/")).join(file).to_path_buf())
+        .filter(|path| path.exists())
+        .ok_or_else(|| IoError::new(
+            ErrorKind::NotFound,
+            format!("'{}' executable not in the same directory as the service executable", file),
+        ))
 }
