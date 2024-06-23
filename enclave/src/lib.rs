@@ -4,7 +4,8 @@ use bigdecimal::{BigDecimal, ToPrimitive};
 use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
 
-use enclave_interface::{SignedVoteRequest, MixedVotes};
+use common::MixedVotes;
+use enclave_interface::SignedVoteRequest;
 
 pub fn mix_votes(signed_requests: &Vec<SignedVoteRequest>) -> Option<MixedVotes> {
     let ayes_balance = signed_requests.iter().filter(|r| r.request.aye).map(|r| r.request.balance).sum::<u128>();

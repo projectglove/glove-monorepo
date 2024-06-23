@@ -8,21 +8,15 @@ edition = "2021"
 parity-scale-codec.workspace = true
 rand.workspace = true
 sp-core.workspace = true
-aws-nitro-enclaves-cose = { workspace = true, optional = true }
-aws-nitro-enclaves-nsm-api = { workspace = true, optional = true }
-serde_cbor = { workspace = true, optional = true }
-openssl = { workspace = true, optional = true }
-thiserror = { workspace = true, optional = true }
+aws-nitro-enclaves-cose.workspace = true
+aws-nitro-enclaves-nsm-api.workspace = true
+serde_bytes.workspace = true
+serde_cbor.workspace = true
+openssl.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
 
 # TODO client-interface and enclave-interface should be merged into common but behind feature flags
-[features]
-attestation = [
-    "dep:aws-nitro-enclaves-cose",
-    "dep:aws-nitro-enclaves-nsm-api",
-    "dep:serde_cbor",
-    "dep:openssl",
-    "dep:thiserror"
-]

@@ -12,6 +12,9 @@ anyhow.workspace = true
 parity-scale-codec.workspace = true
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
 cfg-if.workspace = true
+serde_bytes.workspace = true
+sp-core.workspace = true
+sha2.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-vsock.workspace = true
@@ -19,5 +22,4 @@ nix = { workspace = true, features = ["socket"] }
 aws-nitro-enclaves-nsm-api.workspace = true
 
 [dev-dependencies]
-sp-core.workspace = true
 sp-runtime.workspace = true

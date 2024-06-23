@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-common = { path = "../common", features = ["attestation"] }
+common = { path = "../common" }
 client-interface = { path = "../client-interface" }
 anyhow.workspace = true
 bigdecimal.workspace = true

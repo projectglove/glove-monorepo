@@ -79,10 +79,11 @@ impl SubstrateNetwork {
         let payload = metadata::tx().utility().batch(calls).unvalidated();
         let events = self.call_extrinsic(&payload).await?;
         if let Some(batch_interrupted) = events.find_first::<BatchInterrupted>()? {
-            if let Some(runtime_error) = self.extract_runtime_error(&batch_interrupted.error) {
-                return Err(BatchError::Module(batch_interrupted.index as usize, runtime_error));
+            return if let Some(runtime_error) = self.extract_runtime_error(&batch_interrupted.error) {
+                Err(BatchError::Module(batch_interrupted.index as usize, runtime_error))
+            } else {
+                Err(BatchError::Dispatch(batch_interrupted))
             }
-            return Err(BatchError::Dispatch(batch_interrupted));
         }
         Ok(events)
     }

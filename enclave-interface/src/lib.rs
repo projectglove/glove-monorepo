@@ -5,7 +5,8 @@ use sp_runtime::MultiSignature;
 use sp_runtime::traits::Verify;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use common::VoteRequest;
+use common::{GloveResult, VoteRequest};
+use common::attestation::AttestationBundle;
 
 /// The parent EC2 instance always has a CID of 3.
 pub const NITRO_HOST_CID: u32 = 3;
@@ -15,7 +16,7 @@ pub const NITRO_PORT: u32 = 5000;
 
 #[derive(Debug, Clone, Encode, Decode)]
 pub enum EnclaveRequest {
-    AttestationDoc,
+    Attestation,
     MixVotes(Vec<SignedVoteRequest>),
 }
 
@@ -27,30 +28,15 @@ pub struct SignedVoteRequest {
 
 impl SignedVoteRequest {
     pub fn is_signature_valid(&self) -> bool {
-        self.signature.verify(self.request.encode().as_slice(), &self.request.account)
+        self.signature.verify(&*self.request.encode(), &self.request.account)
     }
 }
 
 #[derive(Debug, Clone, Encode, Decode)]
 pub enum EnclaveResponse {
-    AttestationDoc(AttestationDoc),
-    MixingResult(Option<MixedVotes>),
+    Attestation(AttestationBundle),
+    GloveResult(GloveResult),
     Error(Error)
-}
-
-#[derive(Debug, Clone, PartialEq, Encode, Decode)]
-pub struct MixedVotes {
-    pub aye: bool,
-    /// The randomized mixed balance for the request at the same index. Note, it's possible for a
-    /// value to be zero.
-    pub balances: Vec<u128>
-}
-
-#[derive(Debug, Clone, Encode, Decode)]
-pub enum AttestationDoc {
-    Nitro(Vec<u8>),
-    /// Marker to indicate mock enclaves do not have attestation.
-    Mock
 }
 
 pub enum EnclaveStream {
@@ -99,7 +85,7 @@ where
 
 #[derive(thiserror::Error, Clone, Debug, Encode, Decode)]
 pub enum Error {
-    #[error("Invalid signature")]
+    #[error("Invalid signature on voting requests")]
     InvalidSignature,
     #[error("Scale decoding error: {0}")]
     Scale(String),

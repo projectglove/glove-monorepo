@@ -1,6 +1,7 @@
+use io::Error as IoError;
+use io::ErrorKind;
 use std::collections::HashMap;
 use std::io;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,6 +26,7 @@ use tracing::{debug, info};
 use tracing::log::warn;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
+use attestation::Error::InsecureMode;
 use client_interface::{is_glove_member, ServiceInfo, SubstrateNetwork};
 use client_interface::account_to_address;
 use client_interface::BatchError;
@@ -43,9 +45,9 @@ use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError::P
 use client_interface::metadata::runtime_types::sp_runtime::DispatchError as MetadataDispatchError;
 use client_interface::metadata::storage;
 use client_interface::RemoveVoteRequest;
-use enclave_interface::{EnclaveRequest, EnclaveResponse, MixedVotes, SignedVoteRequest};
-use enclave_interface::AttestationDoc::Mock;
-use enclave_interface::AttestationDoc::Nitro;
+use common::{attestation, MixedVotes};
+use common::attestation::{AttestationBundle, GloveProof};
+use enclave_interface::{EnclaveRequest, EnclaveResponse, SignedVoteRequest};
 use RuntimeError::ConvictionVoting;
 use service::EnclaveHandle;
 use ServiceError::{NotMember, PollNotOngoing, Scale};
@@ -70,11 +72,7 @@ struct Args {
 
     /// Which mode the Glove enclave should run in.
     #[arg(long, value_enum, default_value_t = EnclaveMode::Nitro)]
-    enclave_mode: EnclaveMode,
-
-    /// Export the enclave's attestation info to the given file path and then exit.
-    #[arg(long, value_name = "FILE")]
-    export_attestation_info: Option<PathBuf>
+    enclave_mode: EnclaveMode
 }
 
 #[derive(ValueEnum, Debug, Clone)]
@@ -114,53 +112,23 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    let enclave_handle = match args.enclave_mode {
-        EnclaveMode::Nitro => {
-            cfg_if! {
-                if #[cfg(target_os = "linux")] {
-                    service::aws_nitro_enclave::connect(false).await?
-                } else {
-                    anyhow::bail!("AWS Nitro enclaves are only supported on Linux");
-                }
-            }
-        }
-        EnclaveMode::Debug => {
-            cfg_if! {
-                if #[cfg(target_os = "linux")] {
-                    warn!("Starting the enclave in debug mode, which is insecure");
-                    service::aws_nitro_enclave::connect(true).await?
-                } else {
-                    anyhow::bail!("AWS Nitro enclaves are only supported on Linux");
-                }
-            }
-        }
-        EnclaveMode::Mock => {
-            warn!("Starting the enclave in mock mode, which is insecure");
-            service::mock_enclave::spawn().await?
-        }
-    };
+    let enclave_handle = initialize_enclave(args.enclave_mode).await?;
 
-    if let Some(export_path) = args.export_attestation_info {
-        let response = enclave_handle.send_request(&EnclaveRequest::AttestationDoc).await?;
-        return match response {
-            EnclaveResponse::AttestationDoc(Nitro(bytes)) => {
-                std::fs::write(export_path, bytes)?;
-                Ok(())
-            }
-            EnclaveResponse::AttestationDoc(Mock) => {
-                info!("Mock enclave does not have an attestation");
-                Ok(())
-            }
-            _ => Err(anyhow::anyhow!("Unexpected response from enclave: {:?}", response))?
-        }
+    let attestation_bundle = retrieve_attestation(&enclave_handle).await?;
+    // Just double-check everything is OK. A failure here prevents invalid Glove proofs from being
+    // submitted on-chain.
+    match attestation_bundle.verify() {
+        Ok(_) | Err(InsecureMode) => {}
+        Err(error) => return Err(error.into())
     }
 
     let network = SubstrateNetwork::connect(args.network_url, args.proxy_secret_phrase).await?;
     info!("Connected to Substrate network: {}", network.url);
 
     let glove_context = Arc::new(GloveContext {
-        network,
         enclave_handle,
+        attestation_bundle,
+        network,
         state: GloveState::default()
     });
 
@@ -176,9 +144,52 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn initialize_enclave(enclave_mode: EnclaveMode) -> io::Result<EnclaveHandle> {
+    match enclave_mode {
+        EnclaveMode::Nitro => {
+            cfg_if! {
+                if #[cfg(target_os = "linux")] {
+                    service::aws_nitro_enclave::connect(false).await
+                } else {
+                    return Err(IoError::new(
+                        ErrorKind::Unsupported,
+                        "AWS Nitro enclaves are only supported on Linux"
+                    ));
+                }
+            }
+        }
+        EnclaveMode::Debug => {
+            cfg_if! {
+                if #[cfg(target_os = "linux")] {
+                    warn!("Starting the enclave in debug mode, which is insecure");
+                    service::aws_nitro_enclave::connect(true).await
+                } else {
+                    return Err(IoError::new(
+                        ErrorKind::Unsupported,
+                        "AWS Nitro enclaves are only supported on Linux"
+                    ));
+                }
+            }
+        }
+        EnclaveMode::Mock => {
+            warn!("Starting the enclave in mock mode, which is insecure");
+            service::mock_enclave::spawn().await
+        }
+    }
+}
+
+async fn retrieve_attestation(enclave_handle: &EnclaveHandle) -> io::Result<AttestationBundle> {
+    let response = enclave_handle.send_request(&EnclaveRequest::Attestation).await?;
+    match response {
+        EnclaveResponse::Attestation(attestation_bundle) => Ok(attestation_bundle),
+        _ => Err(IoError::new(ErrorKind::InvalidData, format!("{:?}", response)))
+    }
+}
+
 struct GloveContext {
-    network: SubstrateNetwork,
     enclave_handle: EnclaveHandle,
+    attestation_bundle: AttestationBundle,
+    network: SubstrateNetwork,
     state: GloveState
 }
 
@@ -394,8 +405,9 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, Mixi
         return Ok(true);
     };
 
-    let vote_mixing_result = mix_votes_in_enclave(&context, &poll_requests).await?;
-    let Some(vote_mixing_result) = vote_mixing_result else {
+    let glove_proof = mix_votes_in_enclave(&context, &poll_requests).await?;
+
+    let Some(mixed_votes) = glove_proof.result.mixed_votes else {
         // TODO Vote abstain with a minimum balance.
         // TODO Should the enclave produce the extrinic calls structs? It would prove the enclave
         //  intiated the abstain votes. Otherwise, users are trusting the host service is correctly
@@ -408,7 +420,7 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, Mixi
         &context.network,
         poll.index,
         &poll_requests,
-        vote_mixing_result
+        mixed_votes
     ).await;
     if result.is_ok() {
         info!("Vote mixing for poll {} succeeded", poll.index);
@@ -430,7 +442,8 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, Mixi
         }
         ProxyError::Batch(BatchError::Module(batch_index, Proxy(NotProxy))) => {
             let request = &poll_requests[batch_index].request;
-            warn!("Account is no longer part of the proxy, removing it from poll and trying again: {:?}", request);
+            warn!("Account is no longer part of the proxy, removing it from poll and trying again: {:?}",
+                request);
             // TODO How to remove on-chain vote if the account is no longer part of the proxy?
             poll.remove_vote_request(request.account.clone()).await;
             Ok(false)
@@ -450,12 +463,23 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, Mixi
 async fn mix_votes_in_enclave(
     context: &GloveContext,
     vote_requests: &Vec<SignedVoteRequest>
-) -> Result<Option<MixedVotes>, MixingError> {
+) -> Result<GloveProof, MixingError> {
     let request = EnclaveRequest::MixVotes(vote_requests.clone());
     let response = context.enclave_handle.send_request(&request).await?;
     debug!("Mixing result from enclave: {:?}", response);
     match response {
-        EnclaveResponse::MixingResult(mixing_result) => Ok(mixing_result),
+        EnclaveResponse::GloveResult(result) => {
+            let glove_proof = GloveProof {
+                result,
+                attestation_bundle: context.attestation_bundle.clone()
+            };
+            match glove_proof.verify() {
+                Ok(_) => debug!("Glove proof verified"),
+                Err(InsecureMode) => warn!("Glove proof from insecure enclave"),
+                Err(error) => return Err(error.into())
+            }
+            Ok(glove_proof)
+        },
         EnclaveResponse::Error(enclave_error) => Err(enclave_error.into()),
         _ => Err(MixingError::UnexpectedResponse(response)),
     }
@@ -528,15 +552,14 @@ async fn batch_proxy_calls(
     // Find the first proxy call which failed, if any
     for (batch_index, proxy_executed) in events.find::<ProxyExecuted>().enumerate() {
         match proxy_executed {
-            Ok(ProxyExecuted { result: Err(dispatch_error) }) => {
+            Ok(ProxyExecuted { result: Ok(_) }) => continue,
+            Ok(ProxyExecuted { result: Err(dispatch_error) }) =>
                 return network
                     .extract_runtime_error(&dispatch_error)
                     .map_or_else(
                         || Err(ProxyError::Dispatch(batch_index, dispatch_error)),
                         |runtime_error| Err(ProxyError::Module(batch_index, runtime_error))
-                    );
-            }
-            Ok(ProxyExecuted { result: Ok(_) }) => continue,
+                    ),
             Err(error) => return Err(error.into())
         }
     }
@@ -546,11 +569,13 @@ async fn batch_proxy_calls(
 #[derive(thiserror::Error, Debug)]
 pub enum MixingError {
     #[error("IO error: {0}")]
-    Io(#[from] io::Error),
+    Io(#[from] IoError),
     #[error("Enclave error: {0}")]
     Enclave(#[from] enclave_interface::Error),
     #[error("Unexpected response from enclave: {0:?}")]
-    UnexpectedResponse(EnclaveResponse)
+    UnexpectedResponse(EnclaveResponse),
+    #[error("Enclave attestation error: {0}")]
+    Attestation(#[from] attestation::Error)
 }
 
 #[derive(thiserror::Error, Debug)]
