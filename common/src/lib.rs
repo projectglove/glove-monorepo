@@ -32,8 +32,11 @@ pub struct GloveResult {
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct MixedVotes {
     pub aye: bool,
-    /// The randomized mixed balance for the request at the same index. Note, it's possible for a
-    /// value to be zero.
-    // TODO This needs to be nonce-balance pairs.
-    pub balances: Vec<u128>
+    pub assigned_balances: Vec<AssignedBalance>
+}
+
+#[derive(Debug, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
+pub struct AssignedBalance {
+    pub nonce: u128,
+    pub balance: u128
 }

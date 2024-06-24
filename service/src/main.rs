@@ -493,8 +493,8 @@ async fn submit_mixed_votes_on_chain(
 ) -> Result<(), ProxyError> {
     let proxy_vote_calls = signed_requests
         .iter()
-        .zip(mixed_votes.balances)
-        .map(|(signed_request, mix_balance)| {
+        .zip(mixed_votes.assigned_balances)
+        .map(|(signed_request, assigned_balance)| {
             ProxyCall::proxy {
                 real: account_to_address(signed_request.request.account.clone()),
                 force_proxy_type: None,
@@ -504,7 +504,7 @@ async fn submit_mixed_votes_on_chain(
                         // TODO Deal with mixed_balance of zero
                         // TODO conviction multiplier
                         vote: Vote(if mixed_votes.aye { AYE } else { NAY }),
-                        balance: mix_balance
+                        balance: assigned_balance.balance
                     }
                 })),
             }
