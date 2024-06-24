@@ -1,6 +1,5 @@
 use io::Error as IoError;
 use io::ErrorKind;
-use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,14 +11,12 @@ use axum::Router;
 use axum::routing::{get, post};
 use cfg_if::cfg_if;
 use clap::{Parser, ValueEnum};
-use itertools::Itertools;
 use parity_scale_codec::Error as ScaleError;
 use sp_runtime::AccountId32;
 use subxt::Error as SubxtError;
 use subxt_signer::sr25519::Keypair;
 use tokio::net::TcpListener;
 use tokio::spawn;
-use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, info};
@@ -49,7 +46,8 @@ use common::{attestation, AYE, MixedVotes, NAY};
 use common::attestation::{AttestationBundle, GloveProof};
 use enclave_interface::{EnclaveRequest, EnclaveResponse, SignedVoteRequest};
 use RuntimeError::ConvictionVoting;
-use service::EnclaveHandle;
+use service::enclave::EnclaveHandle;
+use service::{GloveState, Poll};
 use ServiceError::{NotMember, PollNotOngoing, Scale};
 use ServiceError::InsufficientBalance;
 use ServiceError::InvalidRequestSignature;
@@ -145,12 +143,19 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+struct GloveContext {
+    enclave_handle: EnclaveHandle,
+    attestation_bundle: AttestationBundle,
+    network: SubstrateNetwork,
+    state: GloveState
+}
+
 async fn initialize_enclave(enclave_mode: EnclaveMode) -> io::Result<EnclaveHandle> {
     match enclave_mode {
         EnclaveMode::Nitro => {
             cfg_if! {
                 if #[cfg(target_os = "linux")] {
-                    service::aws_nitro_enclave::connect(false).await
+                    service::enclave::nitro::connect(false).await
                 } else {
                     return Err(IoError::new(
                         ErrorKind::Unsupported,
@@ -163,7 +168,7 @@ async fn initialize_enclave(enclave_mode: EnclaveMode) -> io::Result<EnclaveHand
             cfg_if! {
                 if #[cfg(target_os = "linux")] {
                     warn!("Starting the enclave in debug mode, which is insecure");
-                    service::aws_nitro_enclave::connect(true).await
+                    service::enclave::nitro::connect(true).await
                 } else {
                     return Err(IoError::new(
                         ErrorKind::Unsupported,
@@ -174,7 +179,7 @@ async fn initialize_enclave(enclave_mode: EnclaveMode) -> io::Result<EnclaveHand
         }
         EnclaveMode::Mock => {
             warn!("Starting the enclave in mock mode, which is insecure");
-            service::mock_enclave::spawn().await
+            service::enclave::mock::spawn().await
         }
     }
 }
@@ -185,93 +190,6 @@ async fn retrieve_attestation(enclave_handle: &EnclaveHandle) -> io::Result<Atte
         EnclaveResponse::Attestation(attestation_bundle) => Ok(attestation_bundle),
         _ => Err(IoError::new(ErrorKind::InvalidData, format!("{:?}", response)))
     }
-}
-
-struct GloveContext {
-    enclave_handle: EnclaveHandle,
-    attestation_bundle: AttestationBundle,
-    network: SubstrateNetwork,
-    state: GloveState
-}
-
-#[derive(Default)]
-struct GloveState {
-    polls: Mutex<HashMap<u32, Poll>>
-}
-
-impl GloveState {
-    async fn get_poll(&self, poll_index: u32) -> Poll {
-        let mut polls = self.polls.lock().await;
-        polls
-            .entry(poll_index)
-            .or_insert_with(|| Poll {
-                index: poll_index,
-                inner: Arc::default()
-            })
-            .clone()
-    }
-
-    async fn get_optional_poll(&self, poll_index: u32) -> Option<Poll> {
-        let polls = self.polls.lock().await;
-        polls.get(&poll_index).map(Poll::clone)
-    }
-
-    async fn remove_poll(&self, poll_index: u32) {
-        let mut polls = self.polls.lock().await;
-        polls.remove(&poll_index);
-    }
-}
-
-#[derive(Debug, Clone)]
-struct Poll {
-    index: u32,
-    inner: Arc<Mutex<InnerPoll>>
-}
-
-impl Poll {
-    /// Returns `true` if vote mixing should be initiated as a background task.
-    async fn add_vote_request(&self, signed_request: SignedVoteRequest) -> bool {
-        if signed_request.request.poll_index != self.index {
-            panic!("Request doesn't belong here: {} vs {:?}", self.index, signed_request);
-        }
-        let mut poll = self.inner.lock().await;
-        poll.requests.insert(signed_request.request.account.clone(), signed_request);
-        let initiate_mix = !poll.pending_mix;
-        poll.pending_mix = true;
-        initiate_mix
-    }
-
-    async fn remove_vote_request(&self, account: AccountId32) -> Option<bool> {
-        let mut poll = self.inner.lock().await;
-        let _ = poll.requests.remove(&account)?;
-        let initiate_mix = !poll.pending_mix;
-        poll.pending_mix = true;
-        Some(initiate_mix)
-    }
-
-    async fn begin_mix(&self) -> Option<Vec<SignedVoteRequest>> {
-        let mut poll = self.inner.lock().await;
-        if !poll.pending_mix {
-            return None;
-        }
-        poll.pending_mix = false;
-        Some(
-            poll.requests
-                .clone()
-                .into_values()
-                .sorted_by(|a, b| Ord::cmp(&a.request.account, &b.request.account))
-                .collect()
-        )
-    }
-}
-
-#[derive(Debug, Default)]
-struct InnerPoll {
-    requests: HashMap<AccountId32, SignedVoteRequest>,
-    /// Initially `false`, this is `true` if a background task has been kicked off to mix the vote
-    /// requests and submit the results on-chain. The task will set this back to `false` once it has
-    /// started by calling [Poll::begin_mix].
-    pending_mix: bool
 }
 
 async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
@@ -634,103 +552,5 @@ impl IntoResponse for ServiceError {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
             }
         }.into_response()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use sp_runtime::MultiSignature;
-    use sp_runtime::testing::sr25519;
-
-    use common::VoteRequest;
-
-    use super::*;
-
-    #[tokio::test]
-    async fn add_new_vote_and_then_remove() {
-        let glove_state = GloveState::default();
-        let account = AccountId32::from([1; 32]);
-        let vote_request = signed_vote_request(account.clone(), 1, true, 10);
-
-        let poll = glove_state.get_poll(1).await;
-
-        let pending_mix = poll.add_vote_request(vote_request.clone()).await;
-        assert_eq!(pending_mix, true);
-        let vote_requeats = poll.begin_mix().await;
-        assert_eq!(vote_requeats, Some(vec![vote_request]));
-
-        let pending_mix = poll.remove_vote_request(account).await;
-        assert_eq!(pending_mix, Some(true));
-        let vote_requeats = poll.begin_mix().await;
-        assert_eq!(vote_requeats, Some(vec![]));
-        assert_eq!(poll.begin_mix().await, None);
-    }
-
-    #[tokio::test]
-    async fn remove_from_non_existent_poll() {
-        let glove_state = GloveState::default();
-        let account = AccountId32::from([1; 32]);
-        let poll = glove_state.get_poll(1).await;
-        let pending_mix = poll.remove_vote_request(account).await;
-        assert_eq!(pending_mix, None);
-    }
-
-    #[tokio::test]
-    async fn remove_non_existent_account_within_poll() {
-        let glove_state = GloveState::default();
-        let account_1 = AccountId32::from([1; 32]);
-        let account_2 = AccountId32::from([2; 32]);
-        let vote_request = signed_vote_request(account_1.clone(), 1, true, 10);
-
-        let poll = glove_state.get_poll(1).await;
-        poll.add_vote_request(vote_request.clone()).await;
-
-        let pending_mix = poll.remove_vote_request(account_2).await;
-        assert_eq!(pending_mix, None);
-    }
-
-    #[tokio::test]
-    async fn replace_vote_before_mixing() {
-        let glove_state = GloveState::default();
-        let account = AccountId32::from([1; 32]);
-        let vote_request_1 = signed_vote_request(account.clone(), 1, true, 10);
-        let vote_request_2 = signed_vote_request(account.clone(), 1, true, 20);
-
-        let poll = glove_state.get_poll(1).await;
-
-        let pending_mix = poll.add_vote_request(vote_request_1.clone()).await;
-        assert_eq!(pending_mix, true);
-        let pending_mix = poll.add_vote_request(vote_request_2.clone()).await;
-        assert_eq!(pending_mix, false);
-
-        let vote_requeats = poll.begin_mix().await;
-        assert_eq!(vote_requeats, Some(vec![vote_request_2]));
-    }
-
-    #[tokio::test]
-    async fn votes_from_two_accounts_in_between_mixing() {
-        let glove_state = GloveState::default();
-        let account_1 = AccountId32::from([1; 32]);
-        let account_2 = AccountId32::from([2; 32]);
-        let vote_request_1 = signed_vote_request(account_1.clone(), 1, true, 10);
-        let vote_request_2 = signed_vote_request(account_2.clone(), 1, false, 20);
-
-        let poll = glove_state.get_poll(1).await;
-
-        let pending_mix = poll.add_vote_request(vote_request_2.clone()).await;
-        assert_eq!(pending_mix, true);
-        let vote_requeats = poll.begin_mix().await;
-        assert_eq!(vote_requeats, Some(vec![vote_request_2.clone()]));
-
-        let pending_mix = poll.add_vote_request(vote_request_1.clone()).await;
-        assert_eq!(pending_mix, true);
-        let vote_requeats = poll.begin_mix().await;
-        assert_eq!(vote_requeats, Some(vec![vote_request_1, vote_request_2]));
-    }
-
-    fn signed_vote_request(account: AccountId32, poll_index: u32, aye: bool, balance: u128) -> SignedVoteRequest {
-        let request = VoteRequest::new(account, poll_index, aye, balance);
-        let signature = MultiSignature::Sr25519(sr25519::Signature::default());
-        SignedVoteRequest { request, signature }
     }
 }

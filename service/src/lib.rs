@@ -1,105 +1,188 @@
-use io::{Error as IoError, ErrorKind};
-use std::{env, io};
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use parity_scale_codec::{DecodeAll, Encode};
+use itertools::Itertools;
+use sp_runtime::AccountId32;
 use tokio::sync::Mutex;
-use tracing::{debug, info};
 
-use enclave_interface::{EnclaveRequest, EnclaveResponse, EnclaveStream};
+use enclave_interface::SignedVoteRequest;
 
-#[derive(Clone)]
-pub struct EnclaveHandle {
-    stream: Arc<Mutex<EnclaveStream>>
+pub mod enclave;
+
+#[derive(Default)]
+pub struct GloveState {
+    polls: Mutex<HashMap<u32, Poll>>
 }
 
-impl EnclaveHandle {
-    pub async fn send_request(&self, request: &EnclaveRequest) -> io::Result<EnclaveResponse> {
-        let mut stream = self.stream.lock().await;
-        stream.write_len_prefix_bytes(&request.encode()).await?;
-        let encoded_response = stream.read_len_prefix_bytes().await?;
-        let response = EnclaveResponse::decode_all(&mut encoded_response.as_slice())
-            .map_err(|scale_error| IoError::new(ErrorKind::InvalidData, scale_error))?;
-        Ok(response)
+impl GloveState {
+    pub async fn get_poll(&self, poll_index: u32) -> Poll {
+        let mut polls = self.polls.lock().await;
+        polls
+            .entry(poll_index)
+            .or_insert_with(|| Poll {
+                index: poll_index,
+                inner: Arc::default()
+            })
+            .clone()
+    }
+
+    pub async fn get_optional_poll(&self, poll_index: u32) -> Option<Poll> {
+        let polls = self.polls.lock().await;
+        polls.get(&poll_index).map(Poll::clone)
+    }
+
+    pub async fn remove_poll(&self, poll_index: u32) {
+        let mut polls = self.polls.lock().await;
+        polls.remove(&poll_index);
     }
 }
 
-#[cfg(target_os = "linux")]
-pub mod aws_nitro_enclave {
-    use nix::sys::socket::VsockAddr;
-    use tokio_vsock::VsockListener;
+#[derive(Debug, Clone)]
+pub struct Poll {
+    pub index: u32,
+    inner: Arc<Mutex<InnerPoll>>
+}
 
-    use enclave_interface::{NITRO_HOST_CID, NITRO_PORT};
+impl Poll {
+    /// Returns `true` if vote mixing should be initiated as a background task.
+    pub async fn add_vote_request(&self, signed_request: SignedVoteRequest) -> bool {
+        if signed_request.request.poll_index != self.index {
+            panic!("Request doesn't belong here: {} vs {:?}", self.index, signed_request);
+        }
+        let mut poll = self.inner.lock().await;
+        poll.requests.insert(signed_request.request.account.clone(), signed_request);
+        let initiate_mix = !poll.pending_mix;
+        poll.pending_mix = true;
+        initiate_mix
+    }
+
+    pub async fn remove_vote_request(&self, account: AccountId32) -> Option<bool> {
+        let mut poll = self.inner.lock().await;
+        let _ = poll.requests.remove(&account)?;
+        let initiate_mix = !poll.pending_mix;
+        poll.pending_mix = true;
+        Some(initiate_mix)
+    }
+
+    pub async fn begin_mix(&self) -> Option<Vec<SignedVoteRequest>> {
+        let mut poll = self.inner.lock().await;
+        if !poll.pending_mix {
+            return None;
+        }
+        poll.pending_mix = false;
+        Some(
+            poll.requests
+                .clone()
+                .into_values()
+                .sorted_by(|a, b| Ord::cmp(&a.request.account, &b.request.account))
+                .collect()
+        )
+    }
+}
+
+#[derive(Debug, Default)]
+struct InnerPoll {
+    requests: HashMap<AccountId32, SignedVoteRequest>,
+    /// Initially `false`, this is `true` if a background task has been kicked off to mix the vote
+    /// requests and submit the results on-chain. The task will set this back to `false` once it has
+    /// started by calling [Poll::begin_mix].
+    pending_mix: bool
+}
+
+#[cfg(test)]
+mod tests {
+    use sp_runtime::MultiSignature;
+    use sp_runtime::testing::sr25519;
+
+    use common::VoteRequest;
 
     use super::*;
 
-    /// Starts the AWS Nitro enclave and waits for it to connect via VSOCK.
-    pub async fn connect(debug_mode: bool) -> io::Result<EnclaveHandle> {
-        let mut listener = VsockListener::bind(VsockAddr::new(NITRO_HOST_CID, NITRO_PORT))?;
-        let mut cmd = Command::new("nitro-cli");
-        cmd.arg("run-enclave");
-        cmd.arg("--cpu-count").arg("2");
-        cmd.arg("--memory").arg("1024");
-        cmd.arg("--eif-path").arg(local_file("glove.eif")?);
-        if debug_mode {
-            cmd.arg("--debug-mode");
-            cmd.arg("--attach-console");
-        }
-        debug!("AWS Nitro enclave cmd: {:?}", cmd);
-        if debug_mode {
-            let process = cmd.spawn()?;
-            debug!("Process to start AWS Nitro enclave, and capture its output, started: {}",
-                process.id());
-        } else {
-            let output = cmd.output()?;
-            if !output.status.success() {
-                return Err(IoError::new(
-                    ErrorKind::Other,
-                    format!("Failed to start AWS Nitro enclave: {:?}", output))
-                );
-            }
-            debug!("AWS Nitro enclave started: {:?}", output);
-        }
-        let (stream, _) = listener.accept().await?;
-        info!("AWS Nitro enclave connection established");
-        Ok(EnclaveHandle { stream: Arc::new(Mutex::new(EnclaveStream::Vsock(stream))) })
+    #[tokio::test]
+    async fn add_new_vote_and_then_remove() {
+        let glove_state = GloveState::default();
+        let account = AccountId32::from([1; 32]);
+        let vote_request = signed_vote_request(account.clone(), 1, true, 10);
+
+        let poll = glove_state.get_poll(1).await;
+
+        let pending_mix = poll.add_vote_request(vote_request.clone()).await;
+        assert_eq!(pending_mix, true);
+        let vote_requeats = poll.begin_mix().await;
+        assert_eq!(vote_requeats, Some(vec![vote_request]));
+
+        let pending_mix = poll.remove_vote_request(account).await;
+        assert_eq!(pending_mix, Some(true));
+        let vote_requeats = poll.begin_mix().await;
+        assert_eq!(vote_requeats, Some(vec![]));
+        assert_eq!(poll.begin_mix().await, None);
     }
-}
 
-/// A mock enclave which is just the enclave binary running as a normal process connected via a
-/// UNIX socket. There is no security benefit to this implementation, and is only provided for
-/// testing purposes.
-pub mod mock_enclave {
-    use tempfile::tempdir;
-    use tokio::net::UnixListener;
-
-    use super::*;
-
-    /// Spawns a new mock enclave process and connects to it via a UNIX socket.
-    pub async fn spawn() -> io::Result<EnclaveHandle> {
-        let temp_dir = tempdir()?;
-        let socket_file = temp_dir.path().join("glove.sock");
-        let listener = UnixListener::bind(socket_file.clone())?;
-        let mut cmd = Command::new(local_file("enclave")?);
-        cmd.arg(socket_file);
-        debug!("Mock enclave cmd: {:?}", cmd);
-        let process = cmd.spawn()?;
-        debug!("Mock enclave process started: {}", process.id());
-        let (stream, _) = listener.accept().await?;
-        info!("Mock enclave connection established");
-        Ok(EnclaveHandle { stream: Arc::new(Mutex::new(EnclaveStream::Unix(stream))) })
+    #[tokio::test]
+    async fn remove_from_non_existent_poll() {
+        let glove_state = GloveState::default();
+        let account = AccountId32::from([1; 32]);
+        let poll = glove_state.get_poll(1).await;
+        let pending_mix = poll.remove_vote_request(account).await;
+        assert_eq!(pending_mix, None);
     }
-}
 
-fn local_file(file: &str) -> io::Result<PathBuf> {
-    env::args()
-        .nth(0)
-        .map(|exe| Path::new(&exe).parent().unwrap_or(Path::new("/")).join(file).to_path_buf())
-        .filter(|path| path.exists())
-        .ok_or_else(|| IoError::new(
-            ErrorKind::NotFound,
-            format!("'{}' executable not in the same directory as the service executable", file),
-        ))
+    #[tokio::test]
+    async fn remove_non_existent_account_within_poll() {
+        let glove_state = GloveState::default();
+        let account_1 = AccountId32::from([1; 32]);
+        let account_2 = AccountId32::from([2; 32]);
+        let vote_request = signed_vote_request(account_1.clone(), 1, true, 10);
+
+        let poll = glove_state.get_poll(1).await;
+        poll.add_vote_request(vote_request.clone()).await;
+
+        let pending_mix = poll.remove_vote_request(account_2).await;
+        assert_eq!(pending_mix, None);
+    }
+
+    #[tokio::test]
+    async fn replace_vote_before_mixing() {
+        let glove_state = GloveState::default();
+        let account = AccountId32::from([1; 32]);
+        let vote_request_1 = signed_vote_request(account.clone(), 1, true, 10);
+        let vote_request_2 = signed_vote_request(account.clone(), 1, true, 20);
+
+        let poll = glove_state.get_poll(1).await;
+
+        let pending_mix = poll.add_vote_request(vote_request_1.clone()).await;
+        assert_eq!(pending_mix, true);
+        let pending_mix = poll.add_vote_request(vote_request_2.clone()).await;
+        assert_eq!(pending_mix, false);
+
+        let vote_requeats = poll.begin_mix().await;
+        assert_eq!(vote_requeats, Some(vec![vote_request_2]));
+    }
+
+    #[tokio::test]
+    async fn votes_from_two_accounts_in_between_mixing() {
+        let glove_state = GloveState::default();
+        let account_1 = AccountId32::from([1; 32]);
+        let account_2 = AccountId32::from([2; 32]);
+        let vote_request_1 = signed_vote_request(account_1.clone(), 1, true, 10);
+        let vote_request_2 = signed_vote_request(account_2.clone(), 1, false, 20);
+
+        let poll = glove_state.get_poll(1).await;
+
+        let pending_mix = poll.add_vote_request(vote_request_2.clone()).await;
+        assert_eq!(pending_mix, true);
+        let vote_requeats = poll.begin_mix().await;
+        assert_eq!(vote_requeats, Some(vec![vote_request_2.clone()]));
+
+        let pending_mix = poll.add_vote_request(vote_request_1.clone()).await;
+        assert_eq!(pending_mix, true);
+        let vote_requeats = poll.begin_mix().await;
+        assert_eq!(vote_requeats, Some(vec![vote_request_1, vote_request_2]));
+    }
+
+    fn signed_vote_request(account: AccountId32, poll_index: u32, aye: bool, balance: u128) -> SignedVoteRequest {
+        let request = VoteRequest::new(account, poll_index, aye, balance);
+        let signature = MultiSignature::Sr25519(sr25519::Signature::default());
+        SignedVoteRequest { request, signature }
+    }
 }
