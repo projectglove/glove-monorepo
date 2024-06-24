@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use bigdecimal::{BigDecimal, ToPrimitive};
+use bigdecimal::{BigDecimal, ToPrimitive, Zero};
 use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
 
@@ -8,27 +8,33 @@ use common::{AssignedBalance, MixedVotes};
 use enclave_interface::SignedVoteRequest;
 
 pub fn mix_votes(signed_requests: &Vec<SignedVoteRequest>) -> Option<MixedVotes> {
-    let ayes_balance = signed_requests.iter().filter(|r| r.request.aye).map(|r| r.request.balance).sum::<u128>();
-    let nays_balance = signed_requests.iter().filter(|r| !r.request.aye).map(|r| r.request.balance).sum::<u128>();
+    let mut rng = thread_rng();
+    // Generate a random multiplier between 1x and 2x.
+    let multipler_range = Uniform::from(1.0..2.0);
+
+    let mut ayes_balance = 0u128;
+    let mut nays_balance = 0u128;
+    let mut randomized_balances: Vec<BigDecimal> = Vec::new();
+    let mut total_randomized_balance = BigDecimal::zero();
+
+    for signed_request in signed_requests {
+        let balance = signed_request.request.balance;
+        if signed_request.request.aye {
+            ayes_balance += balance;
+        } else {
+            nays_balance += balance;
+        }
+        let random_multiplier = multipler_range.sample(&mut rng);
+        let random_multiplier = BigDecimal::from_str(&random_multiplier.to_string()).unwrap();
+        let randomized_balance = random_multiplier * balance;
+        randomized_balances.push(randomized_balance.clone());
+        total_randomized_balance += randomized_balance;
+    }
+
     let net_balance = ayes_balance.abs_diff(nays_balance);
     if net_balance == 0 {
         return None;
     }
-
-    let mut rng = thread_rng();
-
-    // Generate a random multiplier between 1x and 2x.
-    let multipler_range = Uniform::from(1.0..2.0);
-    let randomized_balances: Vec<BigDecimal> = signed_requests
-        .iter()
-        .map(|signed_request| {
-            let random_multiplier = multipler_range.sample(&mut rng);
-            let random_multiplier = BigDecimal::from_str(random_multiplier.to_string().as_str()).unwrap();
-            random_multiplier * signed_request.request.balance
-        })
-        .collect();
-
-    let total_randomized_balance = randomized_balances.iter().sum::<BigDecimal>();
 
     let mut net_balances: Vec<u128> = signed_requests
         .iter()
