@@ -50,7 +50,7 @@ pub fn mix_votes(signed_requests: &Vec<SignedVoteRequest>) -> Option<MixedVotes>
 
     let mut leftover_balance = net_balance - net_balances.iter().sum::<u128>();
 
-    let mut index: usize = 0;
+    let mut index = 0;
     while leftover_balance > 0 {
         if signed_requests[index].request.balance > net_balances[index] {
             let balance_allowance = signed_requests[index].request.balance - net_balances[index];

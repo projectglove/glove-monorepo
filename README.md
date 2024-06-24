@@ -41,12 +41,10 @@ Take note of the `PCR0` value, which is a measurement of the enclave image.
 Start the service, which will also start the enclave and connect to it. Killing the service will terminate the enclave.
 
 ```shell
-target/release/service --proxy-secret-phrase=<SECRET PHRASE> --network-url=<URL>
+target/release/service --address=<LISTEN> --proxy-secret-phrase=<SECRET PHRASE> --network-url=<URL>
 ```
 
 Run with `--help` to see example network endpoints for various chains.
-
-For now the service is hard-coded to listen on `localhost:8080`, which will be fixed.
 
 You can check the enclave is running with:
 

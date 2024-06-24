@@ -64,6 +64,10 @@ struct Args {
     #[arg(long, value_parser = client_interface::parse_secret_phrase)]
     proxy_secret_phrase: Keypair,
 
+    /// Address the service will listen on.
+    #[arg(long)]
+    address: String,
+
     /// URL for the network endpoint.
     ///
     /// See https://wiki.polkadot.network/docs/maintain-endpoints for more information.
@@ -138,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/remove-vote", post(remove_vote))
         .layer(TraceLayer::new_for_http())
         .with_state(glove_context);
-    let listener = TcpListener::bind("localhost:8080").await?;
+    let listener = TcpListener::bind(args.address).await?;
     axum::serve(listener, router).await?;
 
     Ok(())
