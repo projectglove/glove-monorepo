@@ -45,7 +45,7 @@ use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError::P
 use client_interface::metadata::runtime_types::sp_runtime::DispatchError as MetadataDispatchError;
 use client_interface::metadata::storage;
 use client_interface::RemoveVoteRequest;
-use common::{attestation, MixedVotes};
+use common::{attestation, AYE, MixedVotes, NAY};
 use common::attestation::{AttestationBundle, GloveProof};
 use enclave_interface::{EnclaveRequest, EnclaveResponse, SignedVoteRequest};
 use RuntimeError::ConvictionVoting;
@@ -53,9 +53,6 @@ use service::EnclaveHandle;
 use ServiceError::{NotMember, PollNotOngoing, Scale};
 use ServiceError::InsufficientBalance;
 use ServiceError::InvalidRequestSignature;
-
-const AYE: u8 = 128;
-const NAY: u8 = 0;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Glove proxy service")]

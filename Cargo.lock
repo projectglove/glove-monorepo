@@ -901,6 +901,7 @@ dependencies = [
  "common",
  "reqwest",
  "sp-core 33.0.1",
+ "sp-runtime 37.0.0",
  "strum",
  "subxt",
  "subxt-signer",

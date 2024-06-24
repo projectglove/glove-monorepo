@@ -7,6 +7,8 @@ pub mod attestation;
 pub mod nitro;
 
 pub const ENCODING_VERSION: u8 = 1;
+pub const AYE: u8 = 128;
+pub const NAY: u8 = 0;
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
 pub struct VoteRequest {
