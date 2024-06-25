@@ -14,7 +14,7 @@ use subxt::blocks::ExtrinsicEvents;
 use subxt::Error as SubxtError;
 use subxt::ext::scale_decode::DecodeAsType;
 use subxt::OnlineClient;
-use subxt::utils::AccountId32 as SubxtAccountId32;
+use subxt::utils::{AccountId32 as SubxtAccountId32, H256};
 use subxt_core::config::PolkadotConfig;
 use subxt_core::tx::payload::Payload;
 use subxt_core::utils::MultiAddress;
@@ -67,17 +67,18 @@ impl SubstrateNetwork {
     pub async fn call_extrinsic<Call: Payload>(
         &self,
         payload: &Call
-    ) -> Result<ExtrinsicEvents<PolkadotConfig>, SubxtError> {
-        Ok(
-            self.api.tx()
-                .sign_and_submit_then_watch_default(payload, &self.keypair).await?
-                .wait_for_finalized_success().await?
-        )
+    ) -> Result<BlockHashAndEvents, SubxtError> {
+        let tx_in_block = self.api.tx()
+            .sign_and_submit_then_watch_default(payload, &self.keypair).await?
+            .wait_for_finalized().await?;
+        let block_hash = tx_in_block.block_hash();
+        let events = tx_in_block.wait_for_success().await?;
+        Ok((block_hash, events))
     }
 
     pub async fn batch(&self, calls: Vec<RuntimeCall>) -> Result<ExtrinsicEvents<PolkadotConfig>, BatchError> {
         let payload = metadata::tx().utility().batch(calls).unvalidated();
-        let events = self.call_extrinsic(&payload).await?;
+        let (_, events) = self.call_extrinsic(&payload).await?;
         if let Some(batch_interrupted) = events.find_first::<BatchInterrupted>()? {
             return if let Some(runtime_error) = self.extract_runtime_error(&batch_interrupted.error) {
                 Err(BatchError::Module(batch_interrupted.index as usize, runtime_error))
@@ -116,6 +117,8 @@ impl SubstrateNetwork {
         account.to_ss58check_with_version(self.ss58_format)
     }
 }
+
+pub type BlockHashAndEvents = (H256, ExtrinsicEvents<PolkadotConfig>);
 
 #[derive(thiserror::Error, Debug)]
 pub enum BatchError {

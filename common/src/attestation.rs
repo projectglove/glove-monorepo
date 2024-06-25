@@ -1,39 +1,55 @@
-use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
+use std::io::{Read, Write};
+
+use flate2::Compression;
+use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use parity_scale_codec::{Decode, DecodeAll, Encode, MaxEncodedLen};
+use parity_scale_codec::Error as ScaleError;
 use serde_bytes::ByteBuf;
 use sha2::{Digest, Sha256};
 use sp_core::{ed25519, Pair};
 
-use crate::{GloveResult, nitro};
+use crate::{ExtrinsicLocation, GloveResult, nitro};
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct GloveProof {
     pub result: GloveResult,
     pub attestation_bundle: AttestationBundle
 }
 
 impl GloveProof {
-    ///
-    pub fn verify(&self) -> Result<EnclaveInfo, Error> {
+    pub fn verify_components(
+        result: &GloveResult,
+        attestation_bundle: &AttestationBundle
+    ) -> Result<EnclaveInfo, Error> {
         // If the attestation bundle is valid, then it means the signing key contained within it is
         // from a genuine secure enclave.
-        let enclave_info = self.attestation_bundle.verify()?;
+        let enclave_info = attestation_bundle.verify()?;
         // If the signature in the Gkove proof is valid, then it means the result was produced by
         // the enclave.
         let valid = <ed25519::Pair as Pair>::verify(
-            &self.result.signature,
-            self.result.mixed_votes.encode(),
-            &self.attestation_bundle.attested_data.signing_key
+            &result.signature,
+            result.mixed_votes.encode(),
+            &attestation_bundle.attested_data.signing_key
         );
         valid.then_some(enclave_info).ok_or(Error::GloveProof)
     }
+
+    pub fn verify(&self) -> Result<EnclaveInfo, Error> {
+        Self::verify_components(&self.result, &self.attestation_bundle)
+    }
 }
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct AttestationBundle {
-    pub version: u8,
     pub attested_data: AttestedData,
     pub attestation: Attestation
 }
+
+/// The current encoding version for the attestation bundle envelope.
+///
+/// A value of 1 indicates GZipped SCALE encoding.
+pub const ATTESTATION_BUNDLE_ENCODING_VERSION: u8 = 1;
 
 impl AttestationBundle {
     ///
@@ -54,22 +70,78 @@ impl AttestationBundle {
             Attestation::Mock => Err(Error::InsecureMode)
         }
     }
+
+    /// Encode with a version prefix byte to indicate the encoding version.
+    pub fn encode_envelope(&self) -> Vec<u8> {
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.push(ATTESTATION_BUNDLE_ENCODING_VERSION);
+        let mut gzip = GzEncoder::new(&mut bytes, Compression::default());
+        gzip.write_all(&self.encode()).unwrap();
+        gzip.finish().unwrap();
+        bytes
+    }
+
+    pub fn decode_envelope(bytes: &[u8]) -> Result<Self, ScaleError> {
+        let version = bytes
+            .get(0)
+            .ok_or_else(|| ScaleError::from("Empty bytes"))?;
+        if *version != ATTESTATION_BUNDLE_ENCODING_VERSION {
+            return Err(ScaleError::from("Unknown encoding version"));
+        }
+        let mut gunzip = GzDecoder::new(&bytes[1..]);
+        let mut uncompressed_bytes = Vec::new();
+        gunzip.read_to_end(&mut uncompressed_bytes)?;
+        Self::decode_all(&mut uncompressed_bytes.as_slice())
+    }
 }
 
-#[derive(Debug, Clone, Encode, Decode, MaxEncodedLen)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
 pub struct AttestedData {
     pub signing_key: ed25519::Public
 }
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub enum Attestation {
     Nitro(nitro::Attestation),
     Mock
 }
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub enum EnclaveInfo {
     Nitro(nitro::EnclaveInfo)
+}
+
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub struct GloveProofLite {
+    pub result: GloveResult,
+    pub location: AttestationBundleLocation,
+}
+
+pub const GLOVE_PROOF_LITE_ENCODING_VERSION: u8 = 1;
+
+impl GloveProofLite {
+    pub fn encode_envelope(&self) -> Vec<u8> {
+        let mut bytes: Vec<u8> = Vec::with_capacity(1 + self.size_hint());
+        bytes.push(GLOVE_PROOF_LITE_ENCODING_VERSION);
+        let _ = &self.encode_to(&mut bytes);
+        bytes
+    }
+
+    pub fn decode_envelope(bytes: &[u8]) -> Result<Self, ScaleError> {
+        let version = bytes
+            .get(0)
+            .ok_or_else(|| ScaleError::from("Empty bytes"))?;
+        if *version != GLOVE_PROOF_LITE_ENCODING_VERSION {
+            return Err(ScaleError::from("Unknown encoding version"));
+        }
+        Self::decode_all(&mut &bytes[1..])
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub enum AttestationBundleLocation {
+    SubstrateRemark(ExtrinsicLocation),
+    // Http(String)
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -82,4 +154,82 @@ pub enum Error {
     AttestedData,
     #[error("Invalid Glove proof signature")]
     GloveProof
+}
+
+#[cfg(test)]
+mod tests {
+    use Attestation::Nitro;
+
+    use crate::{AssignedBalance, MixedVotes, nitro};
+    use crate::attestation::Attestation::Mock;
+
+    use super::*;
+
+    static SAMPLE_NITRO_ATTESTATION_BYTES: &[u8] = include_bytes!("../sample-aws-nitro-attestation-doc");
+
+    // TODO Test for Nitro debug mode
+    // TODO Test valid glove proof
+    // TODO Test invalid glove proof
+
+    #[test]
+    fn mock_attestation_bundle() {
+        let attestation_bundle = AttestationBundle {
+            attested_data: AttestedData {
+                signing_key: ed25519::Pair::generate().0.public()
+            },
+            attestation: Mock
+        };
+        assert!(matches!(attestation_bundle.verify(), Err(Error::InsecureMode)));
+    }
+
+    #[test]
+    fn attested_data_mismatch_in_attestation_bundle() {
+        let attestation_bundle = AttestationBundle {
+            attested_data: AttestedData {
+                signing_key: ed25519::Pair::generate().0.public()
+            },
+            attestation: Nitro(nitro::Attestation::try_from(SAMPLE_NITRO_ATTESTATION_BYTES).unwrap())
+        };
+        assert!(matches!(attestation_bundle.verify(), Err(Error::AttestedData)));
+    }
+
+    #[test]
+    fn attestation_bundle_envelope_encoding() {
+        let original = AttestationBundle {
+            attested_data: AttestedData {
+                signing_key: ed25519::Pair::generate().0.public()
+            },
+            attestation: Nitro(nitro::Attestation::try_from(SAMPLE_NITRO_ATTESTATION_BYTES).unwrap())
+        };
+
+        let envelope_encoding = original.encode_envelope();
+        let scale_encoding = original.encode();
+        let roundtrip = AttestationBundle::decode_envelope(&envelope_encoding).unwrap();
+        // Basic check for the compression
+        assert!(envelope_encoding.len() < scale_encoding.len());
+        assert_eq!(original, roundtrip);
+    }
+
+    #[test]
+    fn glove_proof_lite_envelope_encoding() {
+        let original = GloveProofLite {
+            result: GloveResult {
+                mixed_votes: Some(MixedVotes {
+                    aye: true,
+                    assigned_balances: vec![
+                        AssignedBalance { nonce: 0, balance: 100 },
+                        AssignedBalance { nonce: 1, balance: 200 }
+                    ]
+                }),
+                signature: Default::default()
+            },
+            location: AttestationBundleLocation::SubstrateRemark(ExtrinsicLocation {
+                block_hash: Default::default(),
+                block_index: 0,
+                batch_index: None,
+            })
+        };
+        let roundtrip = GloveProofLite::decode_envelope(&original.encode_envelope()).unwrap();
+        assert_eq!(original, roundtrip);
+    }
 }

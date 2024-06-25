@@ -6,7 +6,6 @@ use parity_scale_codec::{DecodeAll, Encode};
 use sp_core::{ed25519, Pair};
 
 use common::attestation::{Attestation, AttestationBundle, AttestedData};
-use common::ENCODING_VERSION;
 use common::GloveResult;
 use enclave_interface::{EnclaveRequest, EnclaveResponse, EnclaveStream, Error, SignedVoteRequest};
 
@@ -35,11 +34,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let attestation_bundle = AttestationBundle {
-        version: ENCODING_VERSION,
-        attested_data,
-        attestation
-    };
+    let attestation_bundle = AttestationBundle { attested_data, attestation };
 
     // Loop, processing requests from the host. If the host termintes, it will close the stream,
     // break the loop and terminate the enclave as well.

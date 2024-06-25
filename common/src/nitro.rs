@@ -36,6 +36,12 @@ impl Decode for Attestation {
     }
 }
 
+impl PartialEq for Attestation {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.as_bytes(false).ok() == other.0.as_bytes(false).ok()
+    }
+}
+
 impl TryFrom<&[u8]> for Attestation {
     type Error = CoseError;
 
@@ -132,7 +138,7 @@ mod tests {
 
     #[test]
     fn decode_and_verify_attestation() {
-        let doc = Attestation(CoseSign1::from_bytes(SAMPLE_NITRO_ATTESTATION_BYTES).unwrap()).verify().unwrap();
+        let doc = Attestation::try_from(SAMPLE_NITRO_ATTESTATION_BYTES).unwrap().verify().unwrap();
         println!("{:?}", doc);
         assert_eq!(doc.pcrs.get(&0).unwrap().to_vec(), hex::decode("dd1c94beae9a589b37f6601ecf73c297ff0bf41a8872f737fabf3c9a2a96eb3b1dcdabc8e33ba1f7654b528518b8b9ed").unwrap());
         assert_eq!(doc.pcrs.get(&1).unwrap().to_vec(), hex::decode("52b919754e1643f4027eeee8ec39cc4a2cb931723de0c93ce5cc8d407467dc4302e86490c01c0d755acfe10dbf657546").unwrap());

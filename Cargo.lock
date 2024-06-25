@@ -941,6 +941,7 @@ version = "0.1.0"
 dependencies = [
  "aws-nitro-enclaves-cose",
  "aws-nitro-enclaves-nsm-api",
+ "flate2",
  "hex",
  "openssl",
  "parity-scale-codec",
@@ -949,6 +950,7 @@ dependencies = [
  "serde_cbor",
  "sha2 0.10.8",
  "sp-core 33.0.1",
+ "subxt",
  "thiserror",
 ]
 
@@ -1624,6 +1626,16 @@ dependencies = [
  "rand",
  "rustc-hex",
  "static_assertions",
+]
+
+[[package]]
+name = "flate2"
+version = "1.0.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f54427cfd1c7829e2a139fcefea601bf088ebca651d2bf53ebc600eac295dae"
+dependencies = [
+ "crc32fast",
+ "miniz_oxide",
 ]
 
 [[package]]

@@ -1,20 +1,44 @@
 use std::collections::HashMap;
+use std::error::Error;
+use std::future::Future;
 use std::sync::Arc;
 
 use itertools::Itertools;
 use sp_runtime::AccountId32;
 use tokio::sync::Mutex;
 
+use common::attestation::AttestationBundleLocation;
 use enclave_interface::SignedVoteRequest;
 
 pub mod enclave;
 
 #[derive(Default)]
 pub struct GloveState {
+    // There may be a non-trivial cost to storing the attestation bundle location, and so it's done
+    // lazily on first poll mixing, rather than eagerly on startup.
+    abl: Mutex<Option<AttestationBundleLocation>>,
     polls: Mutex<HashMap<u32, Poll>>
 }
 
 impl GloveState {
+    pub async fn attestation_bundle_location<E: Error, Fut>(
+        &self,
+        new: impl FnOnce() -> Fut
+    ) -> Result<AttestationBundleLocation, E>
+    where
+        Fut: Future<Output = Result<AttestationBundleLocation, E>>,
+    {
+        let mut abl_holder = self.abl.lock().await;
+        match &*abl_holder {
+            None => {
+                let abl = new().await?;
+                *abl_holder = Some(abl.clone());
+                Ok(abl)
+            }
+            Some(abl) => Ok(abl.clone())
+        }
+    }
+
     pub async fn get_poll(&self, poll_index: u32) -> Poll {
         let mut polls = self.polls.lock().await;
         polls

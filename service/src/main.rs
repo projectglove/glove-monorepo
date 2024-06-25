@@ -11,7 +11,7 @@ use axum::Router;
 use axum::routing::{get, post};
 use cfg_if::cfg_if;
 use clap::{Parser, ValueEnum};
-use parity_scale_codec::Error as ScaleError;
+use parity_scale_codec::{Error as ScaleError};
 use sp_runtime::AccountId32;
 use subxt::Error as SubxtError;
 use subxt_signer::sr25519::Keypair;
@@ -42,12 +42,12 @@ use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError::P
 use client_interface::metadata::runtime_types::sp_runtime::DispatchError as MetadataDispatchError;
 use client_interface::metadata::storage;
 use client_interface::RemoveVoteRequest;
-use common::{attestation, AYE, MixedVotes, NAY};
-use common::attestation::{AttestationBundle, GloveProof};
+use common::{attestation, AYE, ExtrinsicLocation, GloveResult, NAY};
+use common::attestation::{AttestationBundle, AttestationBundleLocation, GloveProof};
 use enclave_interface::{EnclaveRequest, EnclaveResponse, SignedVoteRequest};
 use RuntimeError::ConvictionVoting;
-use service::enclave::EnclaveHandle;
 use service::{GloveState, Poll};
+use service::enclave::EnclaveHandle;
 use ServiceError::{NotMember, PollNotOngoing, Scale};
 use ServiceError::InsufficientBalance;
 use ServiceError::InvalidRequestSignature;
@@ -85,6 +85,7 @@ enum EnclaveMode {
 }
 
 // TODO Listen, or poll, for any member who votes directly
+// TODO Test what an actual limit is on batched votes
 
 // TODO Deal with RPC disconnect:
 // 2024-06-19T11:36:12.533696Z DEBUG rustls::common_state: Sending warning alert CloseNotify
@@ -324,22 +325,13 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, Mixi
         return Ok(true);
     };
 
-    let glove_proof = mix_votes_in_enclave(&context, &poll_requests).await?;
+    let glove_result = mix_votes_in_enclave(&context, &poll_requests).await?;
 
-    let Some(mixed_votes) = glove_proof.result.mixed_votes else {
-        // TODO Vote abstain with a minimum balance.
-        // TODO Should the enclave produce the extrinic calls structs? It would prove the enclave
-        //  intiated the abstain votes. Otherwise, users are trusting the host service is correctly
-        //  interpreting the enclave's None mixing output.
-        warn!("Net zero mix votes");
-        return Ok(true);
-    };
-
-    let result = submit_mixed_votes_on_chain(
-        &context.network,
+    let result = submit_glove_result_on_chain(
+        &context,
         poll.index,
         &poll_requests,
-        mixed_votes
+        &glove_result
     ).await;
     if result.is_ok() {
         info!("Vote mixing for poll {} succeeded", poll.index);
@@ -382,37 +374,46 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, Mixi
 async fn mix_votes_in_enclave(
     context: &GloveContext,
     vote_requests: &Vec<SignedVoteRequest>
-) -> Result<GloveProof, MixingError> {
+) -> Result<GloveResult, MixingError> {
     let request = EnclaveRequest::MixVotes(vote_requests.clone());
     let response = context.enclave_handle.send_request(&request).await?;
     debug!("Mixing result from enclave: {:?}", response);
     match response {
         EnclaveResponse::GloveResult(result) => {
-            let glove_proof = GloveProof {
-                result,
-                attestation_bundle: context.attestation_bundle.clone()
-            };
-            match glove_proof.verify() {
+            // Double-check things all line up
+            match GloveProof::verify_components(&result, &context.attestation_bundle) {
                 Ok(_) => debug!("Glove proof verified"),
                 Err(InsecureMode) => warn!("Glove proof from insecure enclave"),
                 Err(error) => return Err(error.into())
             }
-            Ok(glove_proof)
+            Ok(result)
         },
         EnclaveResponse::Error(enclave_error) => Err(enclave_error.into()),
         _ => Err(MixingError::UnexpectedResponse(response)),
     }
 }
 
-async fn submit_mixed_votes_on_chain(
-    network: &SubstrateNetwork,
+async fn submit_glove_result_on_chain(
+    context: &GloveContext,
     poll_index: u32,
     signed_requests: &Vec<SignedVoteRequest>,
-    mixed_votes: MixedVotes
+    glove_result: &GloveResult
 ) -> Result<(), ProxyError> {
+    let Some(mixed_votes) = &glove_result.mixed_votes else {
+        // TODO Vote abstain with a minimum balance.
+        // TODO Should the enclave produce the extrinic calls structs? It would prove the enclave
+        //  intiated the abstain votes. Otherwise, users are trusting the host service is correctly
+        //  interpreting the enclave's None mixing output.
+        panic!("Net zero mix votes");
+    };
+
+    let attestation_bundle_location = context.state.attestation_bundle_location(|| async {
+        post_attestation_bundle_location(&context).await
+    }).await?;
+
     let proxy_vote_calls = signed_requests
         .iter()
-        .zip(mixed_votes.assigned_balances)
+        .zip(&mixed_votes.assigned_balances)
         .map(|(signed_request, assigned_balance)| {
             ProxyCall::proxy {
                 real: account_to_address(signed_request.request.account.clone()),
@@ -430,7 +431,25 @@ async fn submit_mixed_votes_on_chain(
         })
         .collect::<Vec<_>>();
 
-    Ok(batch_proxy_calls(network, proxy_vote_calls).await?)
+    Ok(batch_proxy_calls(&context.network, proxy_vote_calls).await?)
+}
+
+async fn post_attestation_bundle_location(
+    context: &GloveContext
+) -> Result<AttestationBundleLocation, SubxtError> {
+    let compressed = context.attestation_bundle.encode_envelope();
+    let payload = client_interface::metadata::tx().system().remark(compressed);
+    let result = context.network
+        .call_extrinsic(&payload).await
+        .map(|(block_hash, events)| {
+            AttestationBundleLocation::SubstrateRemark(ExtrinsicLocation {
+                block_hash,
+                block_index: events.extrinsic_index(),
+                batch_index: None
+            })
+        });
+    info!("Attestation bundle location: {:?}", result);
+    result
 }
 
 async fn proxy_remove_vote(
