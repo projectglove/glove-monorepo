@@ -6,7 +6,6 @@ use parity_scale_codec::{DecodeAll, Encode};
 use sp_core::{ed25519, Pair};
 
 use common::attestation::{Attestation, AttestationBundle, AttestedData};
-use common::GloveResult;
 use enclave_interface::{EnclaveRequest, EnclaveResponse, EnclaveStream, Error, SignedVoteRequest};
 
 // The Glove enclave is a simple process which listens for vote mixing requests.
@@ -126,9 +125,10 @@ fn process_mix_votes(
         .iter()
         .all(|signed_request| signed_request.is_signature_valid());
     if signatures_valid {
-        let mixed_votes = enclave::mix_votes(&vote_requests);
-        let signature = signing_key.sign(&mixed_votes.encode());
-        EnclaveResponse::GloveResult(GloveResult { mixed_votes, signature })
+        match enclave::mix_votes(&vote_requests) {
+            Ok(glove_result) => EnclaveResponse::GloveResult(glove_result.sign(signing_key)),
+            Err(error) => EnclaveResponse::Error(Error::Mixing(error.to_string()))
+        }
     } else {
         EnclaveResponse::Error(Error::InvalidSignature)
     }

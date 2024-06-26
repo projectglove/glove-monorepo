@@ -9,17 +9,17 @@ use serde_bytes::ByteBuf;
 use sha2::{Digest, Sha256};
 use sp_core::{ed25519, Pair};
 
-use crate::{ExtrinsicLocation, GloveResult, nitro};
+use crate::{ExtrinsicLocation, nitro, SignedGloveResult};
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct GloveProof {
-    pub result: GloveResult,
+    pub signed_result: SignedGloveResult,
     pub attestation_bundle: AttestationBundle
 }
 
 impl GloveProof {
     pub fn verify_components(
-        result: &GloveResult,
+        signed_result: &SignedGloveResult,
         attestation_bundle: &AttestationBundle
     ) -> Result<EnclaveInfo, Error> {
         // If the attestation bundle is valid, then it means the signing key contained within it is
@@ -28,15 +28,15 @@ impl GloveProof {
         // If the signature in the Gkove proof is valid, then it means the result was produced by
         // the enclave.
         let valid = <ed25519::Pair as Pair>::verify(
-            &result.signature,
-            result.mixed_votes.encode(),
+            &signed_result.signature,
+            signed_result.result.encode(),
             &attestation_bundle.attested_data.signing_key
         );
         valid.then_some(enclave_info).ok_or(Error::GloveProof)
     }
 
     pub fn verify(&self) -> Result<EnclaveInfo, Error> {
-        Self::verify_components(&self.result, &self.attestation_bundle)
+        Self::verify_components(&self.signed_result, &self.attestation_bundle)
     }
 }
 
@@ -98,6 +98,7 @@ impl AttestationBundle {
 #[derive(Debug, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
 pub struct AttestedData {
     pub signing_key: ed25519::Public
+    // TODO Genesis hash
 }
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
@@ -113,8 +114,8 @@ pub enum EnclaveInfo {
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct GloveProofLite {
-    pub result: GloveResult,
-    pub location: AttestationBundleLocation,
+    pub signed_result: SignedGloveResult,
+    pub attestation_location: AttestationBundleLocation,
 }
 
 pub const GLOVE_PROOF_LITE_ENCODING_VERSION: u8 = 1;
@@ -160,7 +161,7 @@ pub enum Error {
 mod tests {
     use Attestation::Nitro;
 
-    use crate::{AssignedBalance, MixedVotes, nitro};
+    use crate::{AssignedBalance, GloveResult, nitro, ResultType, StandardResult};
     use crate::attestation::Attestation::Mock;
 
     use super::*;
@@ -213,17 +214,20 @@ mod tests {
     #[test]
     fn glove_proof_lite_envelope_encoding() {
         let original = GloveProofLite {
-            result: GloveResult {
-                mixed_votes: Some(MixedVotes {
-                    aye: true,
-                    assigned_balances: vec![
-                        AssignedBalance { nonce: 0, balance: 100 },
-                        AssignedBalance { nonce: 1, balance: 200 }
-                    ]
-                }),
+            signed_result: SignedGloveResult {
+                result: GloveResult {
+                    poll_index: 123,
+                    result_type: ResultType::Standard(StandardResult {
+                        aye: true,
+                        assigned_balances: vec![
+                            AssignedBalance { nonce: 0, balance: 100 },
+                            AssignedBalance { nonce: 1, balance: 200 }
+                        ]
+                    })
+                },
                 signature: Default::default()
             },
-            location: AttestationBundleLocation::SubstrateRemark(ExtrinsicLocation {
+            attestation_location: AttestationBundleLocation::SubstrateRemark(ExtrinsicLocation {
                 block_hash: Default::default(),
                 block_index: 0,
                 batch_index: None,

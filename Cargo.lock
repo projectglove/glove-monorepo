@@ -1485,6 +1485,7 @@ dependencies = [
  "sha2 0.10.8",
  "sp-core 33.0.1",
  "sp-runtime 37.0.0",
+ "thiserror",
  "tokio",
  "tokio-vsock",
 ]

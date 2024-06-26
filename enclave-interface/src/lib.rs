@@ -5,7 +5,7 @@ use sp_runtime::MultiSignature;
 use sp_runtime::traits::Verify;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use common::{GloveResult, VoteRequest};
+use common::{SignedGloveResult, VoteRequest};
 use common::attestation::AttestationBundle;
 
 /// The parent EC2 instance always has a CID of 3.
@@ -35,7 +35,7 @@ impl SignedVoteRequest {
 #[derive(Debug, Clone, Encode, Decode)]
 pub enum EnclaveResponse {
     Attestation(AttestationBundle),
-    GloveResult(GloveResult),
+    GloveResult(SignedGloveResult),
     Error(Error)
 }
 
@@ -89,4 +89,6 @@ pub enum Error {
     InvalidSignature,
     #[error("Scale decoding error: {0}")]
     Scale(String),
+    #[error("Vote mixing error: {0}")]
+    Mixing(String)
 }

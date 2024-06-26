@@ -11,7 +11,7 @@ use axum::Router;
 use axum::routing::{get, post};
 use cfg_if::cfg_if;
 use clap::{Parser, ValueEnum};
-use parity_scale_codec::{Error as ScaleError};
+use parity_scale_codec::Error as ScaleError;
 use sp_runtime::AccountId32;
 use subxt::Error as SubxtError;
 use subxt_signer::sr25519::Keypair;
@@ -42,7 +42,7 @@ use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError::P
 use client_interface::metadata::runtime_types::sp_runtime::DispatchError as MetadataDispatchError;
 use client_interface::metadata::storage;
 use client_interface::RemoveVoteRequest;
-use common::{attestation, AYE, ExtrinsicLocation, GloveResult, NAY};
+use common::{attestation, AYE, ExtrinsicLocation, NAY, ResultType, SignedGloveResult};
 use common::attestation::{AttestationBundle, AttestationBundleLocation, GloveProof};
 use enclave_interface::{EnclaveRequest, EnclaveResponse, SignedVoteRequest};
 use RuntimeError::ConvictionVoting;
@@ -325,13 +325,13 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, Mixi
         return Ok(true);
     };
 
-    let glove_result = mix_votes_in_enclave(&context, &poll_requests).await?;
+    let signed_glove_result = mix_votes_in_enclave(&context, &poll_requests).await?;
 
     let result = submit_glove_result_on_chain(
         &context,
         poll.index,
         &poll_requests,
-        &glove_result
+        &signed_glove_result
     ).await;
     if result.is_ok() {
         info!("Vote mixing for poll {} succeeded", poll.index);
@@ -374,20 +374,20 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, Mixi
 async fn mix_votes_in_enclave(
     context: &GloveContext,
     vote_requests: &Vec<SignedVoteRequest>
-) -> Result<GloveResult, MixingError> {
+) -> Result<SignedGloveResult, MixingError> {
     let request = EnclaveRequest::MixVotes(vote_requests.clone());
     let response = context.enclave_handle.send_request(&request).await?;
     debug!("Mixing result from enclave: {:?}", response);
     match response {
-        EnclaveResponse::GloveResult(result) => {
-            // Double-check things all line up
-            match GloveProof::verify_components(&result, &context.attestation_bundle) {
+        EnclaveResponse::GloveResult(signed_result) => {
+            // Double-check things all line up before committing on-chain
+            match GloveProof::verify_components(&signed_result, &context.attestation_bundle) {
                 Ok(_) => debug!("Glove proof verified"),
                 Err(InsecureMode) => warn!("Glove proof from insecure enclave"),
                 Err(error) => return Err(error.into())
             }
-            Ok(result)
-        },
+            Ok(signed_result)
+        }
         EnclaveResponse::Error(enclave_error) => Err(enclave_error.into()),
         _ => Err(MixingError::UnexpectedResponse(response)),
     }
@@ -397,9 +397,9 @@ async fn submit_glove_result_on_chain(
     context: &GloveContext,
     poll_index: u32,
     signed_requests: &Vec<SignedVoteRequest>,
-    glove_result: &GloveResult
+    signed_glove_result: &SignedGloveResult
 ) -> Result<(), ProxyError> {
-    let Some(mixed_votes) = &glove_result.mixed_votes else {
+    let ResultType::Standard(standard) = &signed_glove_result.result.result_type else {
         // TODO Vote abstain with a minimum balance.
         // TODO Should the enclave produce the extrinic calls structs? It would prove the enclave
         //  intiated the abstain votes. Otherwise, users are trusting the host service is correctly
@@ -413,7 +413,7 @@ async fn submit_glove_result_on_chain(
 
     let proxy_vote_calls = signed_requests
         .iter()
-        .zip(&mixed_votes.assigned_balances)
+        .zip(&standard.assigned_balances)
         .map(|(signed_request, assigned_balance)| {
             ProxyCall::proxy {
                 real: account_to_address(signed_request.request.account.clone()),
@@ -423,7 +423,7 @@ async fn submit_glove_result_on_chain(
                     vote: AccountVote::Standard {
                         // TODO Deal with mixed_balance of zero
                         // TODO conviction multiplier
-                        vote: Vote(if mixed_votes.aye { AYE } else { NAY }),
+                        vote: Vote(if standard.aye { AYE } else { NAY }),
                         balance: assigned_balance.balance
                     }
                 })),
