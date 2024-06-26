@@ -904,7 +904,9 @@ dependencies = [
  "sp-runtime 37.0.0",
  "strum",
  "subxt",
+ "subxt-core",
  "subxt-signer",
+ "thiserror",
  "tokio",
 ]
 

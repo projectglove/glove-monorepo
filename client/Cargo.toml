@@ -10,9 +10,11 @@ anyhow.workspace = true
 bigdecimal.workspace = true
 clap.workspace = true
 subxt.workspace = true
+subxt-core.workspace = true
 subxt-signer.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 reqwest.workspace = true
 strum.workspace = true
 sp-core.workspace = true
 sp-runtime.workspace = true
+thiserror.workspace = true

@@ -24,11 +24,12 @@ use tracing::log::warn;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
 use attestation::Error::InsecureMode;
-use client_interface::{is_glove_member, ServiceInfo, SubstrateNetwork};
+use client_interface::{ExtrinsicEvents, is_glove_member, ServiceInfo, SubstrateNetwork};
 use client_interface::account_to_address;
 use client_interface::BatchError;
 use client_interface::core_to_subxt;
 use client_interface::metadata::proxy::events::ProxyExecuted;
+use client_interface::metadata::runtime_types::frame_system::pallet::Call as SystemCall;
 use client_interface::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
 use client_interface::metadata::runtime_types::pallet_conviction_voting::pallet::Error::{InsufficientFunds, NotOngoing, NotVoter};
 use client_interface::metadata::runtime_types::pallet_conviction_voting::vote::AccountVote;
@@ -43,7 +44,7 @@ use client_interface::metadata::runtime_types::sp_runtime::DispatchError as Meta
 use client_interface::metadata::storage;
 use client_interface::RemoveVoteRequest;
 use common::{attestation, AYE, ExtrinsicLocation, NAY, ResultType, SignedGloveResult};
-use common::attestation::{AttestationBundle, AttestationBundleLocation, GloveProof};
+use common::attestation::{AttestationBundle, AttestationBundleLocation, GloveProof, GloveProofLite};
 use enclave_interface::{EnclaveRequest, EnclaveResponse, SignedVoteRequest};
 use RuntimeError::ConvictionVoting;
 use service::{GloveState, Poll};
@@ -331,7 +332,7 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, Mixi
         &context,
         poll.index,
         &poll_requests,
-        &signed_glove_result
+        signed_glove_result
     ).await;
     if result.is_ok() {
         info!("Vote mixing for poll {} succeeded", poll.index);
@@ -397,7 +398,7 @@ async fn submit_glove_result_on_chain(
     context: &GloveContext,
     poll_index: u32,
     signed_requests: &Vec<SignedVoteRequest>,
-    signed_glove_result: &SignedGloveResult
+    signed_glove_result: SignedGloveResult
 ) -> Result<(), ProxyError> {
     let ResultType::Standard(standard) = &signed_glove_result.result.result_type else {
         // TODO Vote abstain with a minimum balance.
@@ -407,34 +408,52 @@ async fn submit_glove_result_on_chain(
         panic!("Net zero mix votes");
     };
 
-    let attestation_bundle_location = context.state.attestation_bundle_location(|| async {
-        post_attestation_bundle_location(&context).await
+    let mut batched_calls = Vec::with_capacity(signed_requests.len() + 1);
+
+    // Add a proxied vote call for each signed vote request
+    for (signed_req, assigned_bal) in signed_requests.iter().zip(&standard.assigned_balances) {
+        batched_calls.push(RuntimeCall::Proxy(ProxyCall::proxy {
+            real: account_to_address(signed_req.request.account.clone()),
+            force_proxy_type: None,
+            call: Box::new(RuntimeCall::ConvictionVoting(ConvictionVotingCall::vote {
+                poll_index,
+                vote: AccountVote::Standard {
+                    // TODO Deal with mixed_balance of zero
+                    // TODO conviction multiplier
+                    vote: Vote(if standard.aye { AYE } else { NAY }),
+                    balance: assigned_bal.balance
+                }
+            })),
+        }));
+    }
+
+    let attestation_location = context.state.attestation_bundle_location(|| async {
+        submit_attestation_bundle_location_on_chain(&context).await
     }).await?;
 
-    let proxy_vote_calls = signed_requests
-        .iter()
-        .zip(&standard.assigned_balances)
-        .map(|(signed_request, assigned_balance)| {
-            ProxyCall::proxy {
-                real: account_to_address(signed_request.request.account.clone()),
-                force_proxy_type: None,
-                call: Box::new(RuntimeCall::ConvictionVoting(ConvictionVotingCall::vote {
-                    poll_index,
-                    vote: AccountVote::Standard {
-                        // TODO Deal with mixed_balance of zero
-                        // TODO conviction multiplier
-                        vote: Vote(if standard.aye { AYE } else { NAY }),
-                        balance: assigned_balance.balance
-                    }
-                })),
-            }
-        })
-        .collect::<Vec<_>>();
+    let glove_proof_lite = GloveProofLite {
+        signed_result: signed_glove_result,
+        attestation_location
+    };
 
-    Ok(batch_proxy_calls(&context.network, proxy_vote_calls).await?)
+    // Add the Glove result, along with the location of the attestation bundle, to the batch
+    batched_calls.push(RuntimeCall::System(SystemCall::remark {
+        remark: glove_proof_lite.encode_envelope()
+    }));
+
+    // We can't use `batchAll` to submit the votes atomically, because it doesn't work with the
+    // `proxy` extrinsic. `proxy` doesn't propagate any errors from the proxied call (it captures
+    // the error in a ProxyExecuted event), and so `batchAll` doesn't receive any errors to
+    // terminate the batch.
+    //
+    // Even if that did work, there is another issue with `batchAll` if there are multiple calls of
+    // the same extrinsic in the batch - there's no way of knowing which of them failed. The
+    // `ItemCompleted` events can't be issued, since they're rolled back in light of the error.
+    let events = context.network.batch(batched_calls).await?;
+    confirm_proxy_executed(&context.network, &events)
 }
 
-async fn post_attestation_bundle_location(
+async fn submit_attestation_bundle_location_on_chain(
     context: &GloveContext
 ) -> Result<AttestationBundleLocation, SubxtError> {
     let compressed = context.attestation_bundle.encode_envelope();
@@ -445,7 +464,6 @@ async fn post_attestation_bundle_location(
             AttestationBundleLocation::SubstrateRemark(ExtrinsicLocation {
                 block_hash,
                 block_index: events.extrinsic_index(),
-                batch_index: None
             })
         });
     info!("Attestation bundle location: {:?}", result);
@@ -457,48 +475,38 @@ async fn proxy_remove_vote(
     account: AccountId32,
     poll_index: u32
 ) -> Result<(), ProxyError> {
-    Ok(
-        // This doesn't need to be a batch call, but using `batch_proxy_calls` lets us reuse the
-        // error handling.
-        batch_proxy_calls(
-            network,
-            vec![ProxyCall::proxy {
-                real: account_to_address(account),
-                force_proxy_type: None,
-                call: Box::new(RuntimeCall::ConvictionVoting(ConvictionVotingCall::remove_vote {
-                    class: None,
-                    index: poll_index
-                })),
-            }]
-        ).await?
-    )
+    // This doesn't need to be a batch call, but using `batch_proxy_calls` lets us reuse the
+    // error handling.
+    let events = network.batch(vec![RuntimeCall::Proxy(
+        ProxyCall::proxy {
+            real: account_to_address(account),
+            force_proxy_type: None,
+            call: Box::new(RuntimeCall::ConvictionVoting(ConvictionVotingCall::remove_vote {
+                class: None,
+                index: poll_index
+            })),
+        }
+    )]).await?;
+    confirm_proxy_executed(network, &events)
 }
 
-// We can't use `batchAll` to submit the votes atomically, because it doesn't work with the `proxy`
-// extrinsic. `proxy` doesn't propagate any errors from the proxied call (it captures the error in a
-// ProxyExecuted event), and so `batchAll` doesn't receive any errors to terminate the batch.
-//
-// Even if that did work, there is another issue with `batchAll` if there are multiple calls of the
-// same extrinsic in the batch - there's no way of knowing which of them failed. The `ItemCompleted`
-// events can't be issued, since they're rolled back in light of the error.
-async fn batch_proxy_calls(
+fn confirm_proxy_executed(
     network: &SubstrateNetwork,
-    proxy_calls: Vec<ProxyCall>
+    events: &ExtrinsicEvents
 ) -> Result<(), ProxyError> {
-    let proxy_calls = proxy_calls.into_iter().map(RuntimeCall::Proxy).collect::<Vec<_>>();
-    let events = network.batch(proxy_calls).await?;
     // Find the first proxy call which failed, if any
     for (batch_index, proxy_executed) in events.find::<ProxyExecuted>().enumerate() {
         match proxy_executed {
             Ok(ProxyExecuted { result: Ok(_) }) => continue,
-            Ok(ProxyExecuted { result: Err(dispatch_error) }) =>
+            Ok(ProxyExecuted { result: Err(dispatch_error) }) => {
                 return network
                     .extract_runtime_error(&dispatch_error)
                     .map_or_else(
                         || Err(ProxyError::Dispatch(batch_index, dispatch_error)),
                         |runtime_error| Err(ProxyError::Module(batch_index, runtime_error))
-                    ),
-            Err(error) => return Err(error.into())
+                    )
+            },
+            Err(subxt_error) => return Err(subxt_error.into())
         }
     }
     Ok(())

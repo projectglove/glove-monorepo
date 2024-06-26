@@ -7,30 +7,22 @@ use DispatchError::Module;
 use reqwest::{Client, StatusCode, Url};
 use sp_core::crypto::AccountId32;
 use sp_core::Encode;
-use sp_runtime::codec::Decode;
-use sp_runtime::MultiAddress;
 use strum::Display;
 use subxt::error::DispatchError;
 use subxt::Error::Runtime;
-use subxt::ext::subxt_core;
-use subxt::ext::subxt_core::ext::sp_core::hexdisplay::AsBytesRef;
 use subxt::utils::MultiSignature;
-use subxt_core::utils::MultiAddress as SubxtMultiAddress;
 use subxt_signer::sr25519::Keypair;
 
-use client_interface::{account_to_address, core_to_subxt, is_glove_member, SignedVoteRequest};
-use client_interface::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
-use client_interface::metadata::runtime_types::pallet_conviction_voting::vote::AccountVote;
-use client_interface::metadata::runtime_types::pallet_proxy::pallet::Call as ProxyCall;
+use client::{Error, try_verify_glove_result};
+use client_interface::{account_to_address, is_glove_member, SignedVoteRequest};
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::Duplicate;
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::NotFound;
-use client_interface::metadata::runtime_types::polkadot_runtime::{ProxyType, RuntimeCall, RuntimeError};
-use client_interface::metadata::utility::calls::types::Batch;
+use client_interface::metadata::runtime_types::polkadot_runtime::{ProxyType, RuntimeError};
 use client_interface::RemoveVoteRequest;
 use client_interface::ServiceInfo;
 use client_interface::SubstrateNetwork;
-use common::{AYE, NAY, VoteRequest};
-use RuntimeCall::ConvictionVoting;
+use common::{ResultType, StandardResult, VoteRequest};
+use ResultType::{Abstain, Standard};
 use RuntimeError::Proxy;
 
 #[tokio::main]
@@ -102,7 +94,7 @@ async fn vote(
         bail!(response.text().await?)
     }
     if vote_cmd.await_glove_confirmation {
-        listen_for_glove_votes(network, &vote_cmd, proxy_account).await?;
+        listen_for_glove_votes(network, &vote_cmd, request.nonce, proxy_account).await?;
     }
     return Ok(SuccessOutput::Voted { nonce: request.nonce });
 }
@@ -111,81 +103,52 @@ async fn vote(
 async fn listen_for_glove_votes(
     network: &SubstrateNetwork,
     vote_cmd: &VoteCmd,
+    nonce: u128,
     proxy_account: &AccountId32
-) -> Result<(), subxt::Error> {
+) -> Result<()> {
     let mut blocks_sub = network.api.blocks().subscribe_finalized().await?;
-    let account = core_to_subxt(network.account());
 
     while let Some(block) = blocks_sub.next().await {
         for extrinsic in block?.extrinsics().await?.iter() {
-            let extrinsic = extrinsic?;
-            let from_proxy = extrinsic
-                .address_bytes()
-                .and_then(parse_extrinsic_address)
-                .filter(|account| account == proxy_account)
-                .is_some();
-            if !from_proxy {
-                continue
-            }
-            let Some(batch) = extrinsic.as_extrinsic::<Batch>()? else {
-                continue;
-            };
-            for batched_call in batch.calls {
-                let Some((real_account, poll_index, vote)) = parse_proxy_vote(batched_call) else {
+            let verification_result = try_verify_glove_result(
+                &network.api,
+                &extrinsic?,
+                proxy_account,
+                vote_cmd.poll_index,
+            ).await;
+            let verified_glove_proof = match verification_result {
+                Ok(None) => continue, // Not what we're looking for
+                Ok(Some(verified_glove_proof)) => verified_glove_proof,
+                Err(Error::Subxt(subxt_error)) => return Err(subxt_error.into()),
+                Err(error) => {
+                    eprintln!("Error verifying Glove proof: {}", error);
                     continue;
-                };
-                if poll_index != vote_cmd.poll_index || real_account != account {
-                    continue
                 }
-                let AccountVote::Standard { vote, balance } = vote else {
-                    // TODO Parse abstained votes for zero netted
-                    continue;
-                };
+            };
+            if let Some(balance) = verified_glove_proof.get_vote_balance(&network.account(), nonce) {
                 let balance = BigDecimal::new(
                     balance.into(),
                     network.token_decimals as i64
                 ).with_scale_round(3, RoundingMode::HalfEven);
-                match vote.0 {
-                    AYE => println!("Glove vote aye with balance {}", balance),
-                    NAY => println!("Glove vote nay with balance {}", balance),
-                    _ => todo!("Implement conviction multipliers")
+                match verified_glove_proof.result_type {
+                    Standard(StandardResult { aye: true, .. }) =>
+                        println!("Glove vote aye with balance {}", balance),
+                    Standard(StandardResult { aye: false, .. }) =>
+                        println!("Glove vote nay with balance {}", balance),
+                    Abstain(_) => println!("Glove abstained with balance {}", balance)
                 }
+                if let Some(_) = &verified_glove_proof.enclave_info {
+                    // TODO Check measurement
+                } else {
+                    eprintln!("WARNING: Secure enclave wasn't used");
+                }
+            } else {
+                eprintln!("WARNING: Received Glove proof for poll, but vote was not included");
             }
         }
     }
 
     Ok(())
-}
-
-fn parse_extrinsic_address(bytes: &[u8]) -> Option<AccountId32> {
-    type Address = MultiAddress<AccountId32, u32>;
-
-    Address::decode(&mut bytes.as_bytes_ref())
-        .ok()
-        .and_then(|address| match address {
-            MultiAddress::Id(account) => Some(account),
-            _ => None
-        })
-}
-
-// TODO Return core AccountId32
-fn parse_proxy_vote(call: RuntimeCall) -> Option<(subxt::utils::AccountId32, u32, AccountVote<u128>)> {
-    let RuntimeCall::Proxy(proxy_call) = call else {
-        return None;
-    };
-    let ProxyCall::proxy { real, force_proxy_type: _, call: proxied_call } = proxy_call else {
-        return None;
-    };
-    let SubxtMultiAddress::Id(real_account) = real else {
-        return None;
-    };
-    let ConvictionVoting(voting_call) = *proxied_call else {
-        return None;
-    };
-    let ConvictionVotingCall::vote { poll_index, vote } = voting_call else {
-        return None;
-    };
-    Some((real_account, poll_index, vote))
 }
 
 async fn remove_vote(

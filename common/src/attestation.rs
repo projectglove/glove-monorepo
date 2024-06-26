@@ -73,7 +73,7 @@ impl AttestationBundle {
 
     /// Encode with a version prefix byte to indicate the encoding version.
     pub fn encode_envelope(&self) -> Vec<u8> {
-        let mut bytes: Vec<u8> = Vec::new();
+        let mut bytes = Vec::new();
         bytes.push(ATTESTATION_BUNDLE_ENCODING_VERSION);
         let mut gzip = GzEncoder::new(&mut bytes, Compression::default());
         gzip.write_all(&self.encode()).unwrap();
@@ -112,6 +112,8 @@ pub enum EnclaveInfo {
     Nitro(nitro::EnclaveInfo)
 }
 
+/// A version of [GloveProof] that contains a location pointer to the [AttestationBundle] instead of
+/// the bundle itself.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct GloveProofLite {
     pub signed_result: SignedGloveResult,
@@ -121,8 +123,9 @@ pub struct GloveProofLite {
 pub const GLOVE_PROOF_LITE_ENCODING_VERSION: u8 = 1;
 
 impl GloveProofLite {
+    // TODO Compress this as well
     pub fn encode_envelope(&self) -> Vec<u8> {
-        let mut bytes: Vec<u8> = Vec::with_capacity(1 + self.size_hint());
+        let mut bytes = Vec::with_capacity(1 + self.size_hint());
         bytes.push(GLOVE_PROOF_LITE_ENCODING_VERSION);
         let _ = &self.encode_to(&mut bytes);
         bytes
@@ -220,8 +223,8 @@ mod tests {
                     result_type: ResultType::Standard(StandardResult {
                         aye: true,
                         assigned_balances: vec![
-                            AssignedBalance { nonce: 0, balance: 100 },
-                            AssignedBalance { nonce: 1, balance: 200 }
+                            AssignedBalance { account: [4; 32].into(), nonce: 0, balance: 100 },
+                            AssignedBalance { account: [7; 32].into(), nonce: 1, balance: 200 }
                         ]
                     })
                 },
@@ -230,7 +233,6 @@ mod tests {
             attestation_location: AttestationBundleLocation::SubstrateRemark(ExtrinsicLocation {
                 block_hash: Default::default(),
                 block_index: 0,
-                batch_index: None,
             })
         };
         let roundtrip = GloveProofLite::decode_envelope(&original.encode_envelope()).unwrap();

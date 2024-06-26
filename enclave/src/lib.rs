@@ -74,9 +74,14 @@ pub fn mix_votes(signed_requests: &Vec<SignedVoteRequest>) -> Result<GloveResult
         .iter()
         .zip(net_balances)
         .map(|(signed_request, balance)| {
-            AssignedBalance { nonce: signed_request.request.nonce, balance }
+            AssignedBalance {
+                account: signed_request.request.account.clone(),
+                nonce: signed_request.request.nonce,
+                balance
+            }
         })
         .collect::<Vec<_>>();
+
     Ok(GloveResult {
         poll_index,
         result_type: ResultType::Standard(StandardResult {
@@ -96,7 +101,6 @@ pub enum Error {
 
 #[cfg(test)]
 mod tests {
-    use sp_core::crypto::AccountId32;
     use sp_runtime::MultiSignature;
     use sp_runtime::testing::sr25519;
 
@@ -240,7 +244,7 @@ mod tests {
 
     fn vote_request(poll_index: u32, nonce: u128, aye: bool, balance: u128) -> SignedVoteRequest {
         let request = VoteRequest {
-            account: AccountId32::from([1; 32]),
+            account: [1; 32].into(),
             poll_index,
             nonce,
             aye,
@@ -253,7 +257,7 @@ mod tests {
     }
 
     fn assigned_balance(nonce: u128, balance: u128) -> AssignedBalance {
-        AssignedBalance { nonce, balance }
+        AssignedBalance { account: [1; 32].into(), nonce, balance }
     }
 
     fn assert(signed_requests: Vec<SignedVoteRequest>, assigned_balances: Vec<AssignedBalance>) {

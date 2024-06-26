@@ -10,7 +10,6 @@ use sp_core::crypto::{AccountId32, Ss58Codec};
 use sp_runtime::MultiSignature;
 use sp_runtime::traits::Verify;
 use ss58_registry::{Ss58AddressFormat, Ss58AddressFormatRegistry, Token};
-use subxt::blocks::ExtrinsicEvents;
 use subxt::Error as SubxtError;
 use subxt::ext::scale_decode::DecodeAsType;
 use subxt::OnlineClient;
@@ -67,7 +66,7 @@ impl SubstrateNetwork {
     pub async fn call_extrinsic<Call: Payload>(
         &self,
         payload: &Call
-    ) -> Result<BlockHashAndEvents, SubxtError> {
+    ) -> Result<(H256, ExtrinsicEvents), SubxtError> {
         let tx_in_block = self.api.tx()
             .sign_and_submit_then_watch_default(payload, &self.keypair).await?
             .wait_for_finalized().await?;
@@ -76,11 +75,12 @@ impl SubstrateNetwork {
         Ok((block_hash, events))
     }
 
-    pub async fn batch(&self, calls: Vec<RuntimeCall>) -> Result<ExtrinsicEvents<PolkadotConfig>, BatchError> {
+    pub async fn batch(&self, calls: Vec<RuntimeCall>) -> Result<ExtrinsicEvents, BatchError> {
         let payload = metadata::tx().utility().batch(calls).unvalidated();
         let (_, events) = self.call_extrinsic(&payload).await?;
         if let Some(batch_interrupted) = events.find_first::<BatchInterrupted>()? {
-            return if let Some(runtime_error) = self.extract_runtime_error(&batch_interrupted.error) {
+            let runtime_error = self.extract_runtime_error(&batch_interrupted.error);
+            return if let Some(runtime_error) = runtime_error {
                 Err(BatchError::Module(batch_interrupted.index as usize, runtime_error))
             } else {
                 Err(BatchError::Dispatch(batch_interrupted))
@@ -118,7 +118,7 @@ impl SubstrateNetwork {
     }
 }
 
-pub type BlockHashAndEvents = (H256, ExtrinsicEvents<PolkadotConfig>);
+pub type ExtrinsicEvents = subxt::blocks::ExtrinsicEvents<PolkadotConfig>;
 
 #[derive(thiserror::Error, Debug)]
 pub enum BatchError {
