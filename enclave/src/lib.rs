@@ -225,7 +225,7 @@ mod tests {
         assert_eq!(result.assigned_balances.iter().map(|a| a.balance).sum::<u128>(), 5);
     }
 
-    fn vote_request(poll_index: u32, nonce: u128, aye: bool, balance: u128) -> SignedVoteRequest {
+    fn vote_request(poll_index: u32, nonce: u32, aye: bool, balance: u128) -> SignedVoteRequest {
         let request = VoteRequest {
             account: [1; 32].into(),
             poll_index,
@@ -239,7 +239,7 @@ mod tests {
         }
     }
 
-    fn assigned_balance(nonce: u128, balance: u128) -> AssignedBalance {
+    fn assigned_balance(nonce: u32, balance: u128) -> AssignedBalance {
         AssignedBalance { account: [1; 32].into(), nonce, balance }
     }
 

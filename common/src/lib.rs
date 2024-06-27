@@ -17,8 +17,10 @@ pub const NAY: u8 = 0;
 #[derive(Debug, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
 pub struct VoteRequest {
     pub account: AccountId32,
+    #[codec(compact)]
     pub poll_index: u32,
-    pub nonce: u128,  // TODO Far too big for the nonce
+    /// Nonce value to prevent replay attacks. Only needs to be unique for the same poll.
+    pub nonce: u32,
     pub aye: bool,
     pub balance: u128
 }
@@ -37,6 +39,7 @@ pub struct SignedGloveResult {
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct GloveResult {
+    #[codec(compact)]
     pub poll_index: u32,
     pub vote: GloveVote,
     pub assigned_balances: Vec<AssignedBalance>
@@ -59,7 +62,7 @@ pub enum GloveVote {
 #[derive(Debug, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
 pub struct AssignedBalance {
     pub account: AccountId32,
-    pub nonce: u128,
+    pub nonce: u32,
     pub balance: u128
 }
 

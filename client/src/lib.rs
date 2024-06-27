@@ -31,7 +31,7 @@ pub struct VerifiedGloveProof {
 
 // TODO API for checking EnclaveInfo for expected measurements
 impl VerifiedGloveProof {
-    pub fn get_vote_balance(&self, account: &AccountId32, nonce: u128) -> Option<u128> {
+    pub fn get_vote_balance(&self, account: &AccountId32, nonce: u32) -> Option<u128> {
         self.result
             .assigned_balances
             .iter()

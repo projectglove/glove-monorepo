@@ -102,7 +102,7 @@ async fn vote(
 async fn listen_for_glove_votes(
     network: &SubstrateNetwork,
     vote_cmd: &VoteCmd,
-    nonce: u128,
+    nonce: u32,
     proxy_account: &AccountId32
 ) -> Result<()> {
     let mut blocks_sub = network.api.blocks().subscribe_finalized().await?;
@@ -262,7 +262,7 @@ enum SuccessOutput {
     #[strum(to_string = "Account already a member of Glove proxy")]
     AlreadyGloveMember,
     #[strum(to_string = "Vote successfully submitted ({nonce})")]
-    Voted { nonce: u128 },
+    Voted { nonce: u32 },
     #[strum(to_string = "Vote successfully removed")]
     VoteRemoved,
     #[strum(to_string = "Account has left Glove proxy")]
