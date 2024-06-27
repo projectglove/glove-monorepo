@@ -70,7 +70,7 @@ pub async fn try_verify_glove_result(
     for assigned_balance in &glove_result.assigned_balances {
         on_chain_vote_balances.get(&assigned_balance.account)
             .filter(|&balance| *balance == assigned_balance.balance)
-            .ok_or(Error::Inconsistent)?;
+            .ok_or(Error::InconsistentVotes)?;
     }
 
     // It's technically possible for there to be more on-chain votes from the same proxy, for the
@@ -82,7 +82,9 @@ pub async fn try_verify_glove_result(
             get_attestation_bundle_from_remark(client, remark_location).await?
     };
 
-    // TODO Check genesis hash
+    if attestation_bundle.attested_data.genesis_hash != client.genesis_hash() {
+        return Err(Error::ChainMismatch);
+    }
 
     let glove_verification_result = GloveProof::verify_components(
         &glove_proof_lite.signed_result,
@@ -226,7 +228,9 @@ pub enum Error {
     #[error("Subxt error: {0}")]
     Subxt(#[from] SubxtError),
     #[error("Votes are inconsistent with the Glove proof")]
-    Inconsistent,
+    InconsistentVotes,
+    #[error("Glove proof is for different chain")]
+    ChainMismatch,
     #[error("Extrinsic at location {0} does not exist")]
     ExtrinsicNotFound(ExtrinsicLocation),
     #[error("Invalid attestation bundle: {0}")]

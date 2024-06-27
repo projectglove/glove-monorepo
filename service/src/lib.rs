@@ -205,7 +205,7 @@ mod tests {
     }
 
     fn signed_vote_request(account: AccountId32, poll_index: u32, aye: bool, balance: u128) -> SignedVoteRequest {
-        let request = VoteRequest::new(account, poll_index, aye, balance);
+        let request = VoteRequest::new(account, Default::default(), poll_index, aye, balance);
         let signature = MultiSignature::Sr25519(sr25519::Signature::default());
         SignedVoteRequest { request, signature }
     }

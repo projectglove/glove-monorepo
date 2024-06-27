@@ -1,5 +1,4 @@
 use io::Error as IoError;
-use io::ErrorKind;
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,7 +50,9 @@ use service::{GloveState, Poll};
 use service::enclave::EnclaveHandle;
 use ServiceError::{NotMember, PollNotOngoing, Scale};
 use ServiceError::InsufficientBalance;
-use ServiceError::InvalidRequestSignature;
+use ServiceError::InvalidSignature;
+
+use crate::ServiceError::ChainMismatch;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Glove proxy service")]
@@ -115,16 +116,18 @@ async fn main() -> anyhow::Result<()> {
 
     let enclave_handle = initialize_enclave(args.enclave_mode).await?;
 
-    let attestation_bundle = retrieve_attestation(&enclave_handle).await?;
+    let network = SubstrateNetwork::connect(args.network_url, args.proxy_secret_phrase).await?;
+    info!("Connected to Substrate network: {}", network.url);
+
+    let attestation_bundle = enclave_handle.send_receive::<AttestationBundle>(
+        &network.api.genesis_hash()
+    ).await?;
     // Just double-check everything is OK. A failure here prevents invalid Glove proofs from being
     // submitted on-chain.
     match attestation_bundle.verify() {
-        Ok(_) | Err(InsecureMode) => {}
+        Ok(_) | Err(InsecureMode) => debug!("Received attestation bundle from enclave"),
         Err(error) => return Err(error.into())
     }
-
-    let network = SubstrateNetwork::connect(args.network_url, args.proxy_secret_phrase).await?;
-    info!("Connected to Substrate network: {}", network.url);
 
     let glove_context = Arc::new(GloveContext {
         enclave_handle,
@@ -160,7 +163,7 @@ async fn initialize_enclave(enclave_mode: EnclaveMode) -> io::Result<EnclaveHand
                     service::enclave::nitro::connect(false).await
                 } else {
                     return Err(IoError::new(
-                        ErrorKind::Unsupported,
+                        io::ErrorKind::Unsupported,
                         "AWS Nitro enclaves are only supported on Linux"
                     ));
                 }
@@ -173,7 +176,7 @@ async fn initialize_enclave(enclave_mode: EnclaveMode) -> io::Result<EnclaveHand
                     service::enclave::nitro::connect(true).await
                 } else {
                     return Err(IoError::new(
-                        ErrorKind::Unsupported,
+                        io::ErrorKind::Unsupported,
                         "AWS Nitro enclaves are only supported on Linux"
                     ));
                 }
@@ -186,14 +189,7 @@ async fn initialize_enclave(enclave_mode: EnclaveMode) -> io::Result<EnclaveHand
     }
 }
 
-async fn retrieve_attestation(enclave_handle: &EnclaveHandle) -> io::Result<AttestationBundle> {
-    let response = enclave_handle.send_request(&EnclaveRequest::Attestation).await?;
-    match response {
-        EnclaveResponse::Attestation(attestation_bundle) => Ok(attestation_bundle),
-        _ => Err(IoError::new(ErrorKind::InvalidData, format!("{:?}", response)))
-    }
-}
-
+// TODO Include attestation
 async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
     Json(ServiceInfo {
         proxy_account: (&context.network).account(),
@@ -212,10 +208,13 @@ async fn vote(
     // Decode it into the `enclave_interface::SignedVoteRequest` version which is better typed and
     // used by the enclave. In the process we end up verifying the signature, which whilst is not
     // necessary since the enclave will do it, is a good sanity check.
-    let (request, signature) = payload.decode()?.ok_or(InvalidRequestSignature)?;
+    let (request, signature) = payload.decode()?.ok_or(InvalidSignature)?;
     let signed_request = SignedVoteRequest { request, signature };
     let request = &signed_request.request;
 
+    if request.genesis_hash != network.api.genesis_hash() {
+        return Err(ChainMismatch);
+    }
     if !is_glove_member(network, request.account.clone(), network.account()).await? {
         return Err(NotMember);
     }
@@ -377,7 +376,7 @@ async fn mix_votes_in_enclave(
     vote_requests: &Vec<SignedVoteRequest>
 ) -> Result<SignedGloveResult, MixingError> {
     let request = EnclaveRequest::MixVotes(vote_requests.clone());
-    let response = context.enclave_handle.send_request(&request).await?;
+    let response = context.enclave_handle.send_receive(&request).await?;
     debug!("Mixing result from enclave: {:?}", response);
     match response {
         EnclaveResponse::GloveResult(signed_result) => {
@@ -390,7 +389,6 @@ async fn mix_votes_in_enclave(
             Ok(signed_result)
         }
         EnclaveResponse::Error(enclave_error) => Err(enclave_error.into()),
-        _ => Err(MixingError::UnexpectedResponse(response)),
     }
 }
 
@@ -519,8 +517,6 @@ pub enum MixingError {
     Io(#[from] IoError),
     #[error("Enclave error: {0}")]
     Enclave(#[from] enclave_interface::Error),
-    #[error("Unexpected response from enclave: {0:?}")]
-    UnexpectedResponse(EnclaveResponse),
     #[error("Enclave attestation error: {0}")]
     Attestation(#[from] attestation::Error)
 }
@@ -553,7 +549,9 @@ impl ProxyError {
 #[derive(thiserror::Error, Debug)]
 enum ServiceError {
     #[error("Signature on signed vote request is invalid")]
-    InvalidRequestSignature,
+    InvalidSignature,
+    #[error("Vote request is for a different chain")]
+    ChainMismatch,
     #[error("Client is not a member of the Glove proxy")]
     NotMember,
     #[error("Poll is not ongoing or does not exist")]
@@ -571,6 +569,7 @@ enum ServiceError {
 impl IntoResponse for ServiceError {
     fn into_response(self) -> Response {
         match self {
+            ChainMismatch => (StatusCode::BAD_REQUEST, self.to_string()),
             NotMember => (StatusCode::BAD_REQUEST, self.to_string()),
             PollNotOngoing => (StatusCode::BAD_REQUEST, self.to_string()),
             InsufficientBalance => (StatusCode::BAD_REQUEST, self.to_string()),

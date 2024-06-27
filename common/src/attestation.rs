@@ -7,7 +7,7 @@ use parity_scale_codec::{Decode, DecodeAll, Encode, MaxEncodedLen};
 use parity_scale_codec::Error as ScaleError;
 use serde_bytes::ByteBuf;
 use sha2::{Digest, Sha256};
-use sp_core::{ed25519, Pair};
+use sp_core::{ed25519, H256, Pair};
 
 use crate::{ExtrinsicLocation, nitro, SignedGloveResult};
 
@@ -97,8 +97,8 @@ impl AttestationBundle {
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
 pub struct AttestedData {
+    pub genesis_hash: H256,
     pub signing_key: ed25519::Public
-    // TODO Genesis hash
 }
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
@@ -123,7 +123,6 @@ pub struct GloveProofLite {
 pub const GLOVE_PROOF_LITE_ENCODING_VERSION: u8 = 1;
 
 impl GloveProofLite {
-    // TODO Compress this as well
     pub fn encode_envelope(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(1 + self.size_hint());
         bytes.push(GLOVE_PROOF_LITE_ENCODING_VERSION);
@@ -179,6 +178,7 @@ mod tests {
     fn mock_attestation_bundle() {
         let attestation_bundle = AttestationBundle {
             attested_data: AttestedData {
+                genesis_hash: Default::default(),
                 signing_key: ed25519::Pair::generate().0.public()
             },
             attestation: Mock
@@ -190,6 +190,7 @@ mod tests {
     fn attested_data_mismatch_in_attestation_bundle() {
         let attestation_bundle = AttestationBundle {
             attested_data: AttestedData {
+                genesis_hash: Default::default(),
                 signing_key: ed25519::Pair::generate().0.public()
             },
             attestation: Nitro(nitro::Attestation::try_from(SAMPLE_NITRO_ATTESTATION_BYTES).unwrap())
@@ -201,6 +202,7 @@ mod tests {
     fn attestation_bundle_envelope_encoding() {
         let original = AttestationBundle {
             attested_data: AttestedData {
+                genesis_hash: Default::default(),
                 signing_key: ed25519::Pair::generate().0.public()
             },
             attestation: Nitro(nitro::Attestation::try_from(SAMPLE_NITRO_ATTESTATION_BYTES).unwrap())

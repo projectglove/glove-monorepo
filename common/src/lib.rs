@@ -17,6 +17,7 @@ pub const NAY: u8 = 0;
 #[derive(Debug, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
 pub struct VoteRequest {
     pub account: AccountId32,
+    pub genesis_hash: H256,
     #[codec(compact)]
     pub poll_index: u32,
     /// Nonce value to prevent replay attacks. Only needs to be unique for the same poll.
@@ -26,8 +27,14 @@ pub struct VoteRequest {
 }
 
 impl VoteRequest {
-    pub fn new(account: AccountId32, poll_index: u32, aye: bool, balance: u128) -> Self {
-        Self { account, poll_index, nonce: random(), aye, balance }
+    pub fn new(
+        account: AccountId32,
+        genesis_hash: H256,
+        poll_index: u32,
+        aye: bool,
+        balance: u128
+    ) -> Self {
+        Self { account, genesis_hash, poll_index, nonce: random(), aye, balance }
     }
 }
 
