@@ -19,21 +19,21 @@ use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeCall;
 use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeCall::ConvictionVoting;
 use client_interface::metadata::system::calls::types::Remark;
 use client_interface::metadata::utility::calls::types::Batch;
-use common::{AssignedBalance, attestation, AYE, ExtrinsicLocation, NAY, ResultType, StandardResult};
+use common::{attestation, AYE, ExtrinsicLocation, GloveResult, GloveVote, NAY};
 use common::attestation::{AttestationBundle, AttestationBundleLocation, GloveProof, GloveProofLite};
 use runtime_types::pallet_conviction_voting::vote::Vote;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct VerifiedGloveProof {
-    pub result_type: ResultType, // TODO There's some duplication here with the assigned_balances
+    pub result: GloveResult,
     pub enclave_info: Option<EnclaveInfo>,
-    pub assigned_balances: Vec<AssignedBalance>,
 }
 
 // TODO API for checking EnclaveInfo for expected measurements
 impl VerifiedGloveProof {
     pub fn get_vote_balance(&self, account: &AccountId32, nonce: u128) -> Option<u128> {
-        self.assigned_balances
+        self.result
+            .assigned_balances
             .iter()
             .find_map(|avb| (avb.account == *account && avb.nonce == nonce).then_some(avb.balance))
     }
@@ -50,38 +50,28 @@ pub async fn try_verify_glove_result(
         // This extrinsic is not a Glove proof
         return Ok(None);
     };
-    if glove_proof_lite.signed_result.result.poll_index != poll_index {
+    let glove_result = &glove_proof_lite.signed_result.result;
+
+    if glove_result.poll_index != poll_index {
         // This proof is for another poll and so let's return early and avoid unnecessary
         // processing, and also avoid any potential errors which wouldn't be relevant to the caller.
         return Ok(None);
     }
 
-    let signed_glove_result = &glove_proof_lite.signed_result;
-    let glove_result = &signed_glove_result.result;
-
     let on_chain_vote_balances: HashMap<AccountId32, u128> = batch.calls
         .iter()
         .filter_map(|call| {
-            parse_and_validate_proxy_vote(call, glove_result.poll_index, &glove_result.result_type)
+            parse_and_validate_proxy_vote(call, glove_result.poll_index, &glove_result.vote)
         })
         .collect::<HashMap<_, _>>();
     // TODO Check for duplicate on-chain votes for the same account
 
-    let assigned_balances = match &glove_proof_lite.signed_result.result.result_type {
-        ResultType::Standard(standard) => {
-            // Make sure each assigned balance from the Glove proof is accounted for on-chain.
-            for assigned_balance in &standard.assigned_balances {
-                on_chain_vote_balances.get(&assigned_balance.account)
-                    .filter(|&balance| *balance == assigned_balance.balance)
-                    .ok_or(Error::Inconsistent)?;
-            }
-            standard.assigned_balances.clone()
-        },
-        ResultType::Abstain(_abstain) => {
-            // TODO Abstain needs to capture account with the nonce
-            todo!("Check abstain balance")
-        }
-    };
+    // Make sure each assigned balance from the Glove proof is accounted for on-chain.
+    for assigned_balance in &glove_result.assigned_balances {
+        on_chain_vote_balances.get(&assigned_balance.account)
+            .filter(|&balance| *balance == assigned_balance.balance)
+            .ok_or(Error::Inconsistent)?;
+    }
 
     // It's technically possible for there to be more on-chain votes from the same proxy, for the
     // same poll, which are not in the proof. This is not something the client has to worry about,
@@ -95,7 +85,7 @@ pub async fn try_verify_glove_result(
     // TODO Check genesis hash
 
     let glove_verification_result = GloveProof::verify_components(
-        &signed_glove_result,
+        &glove_proof_lite.signed_result,
         &attestation_bundle
     );
 
@@ -106,9 +96,8 @@ pub async fn try_verify_glove_result(
     };
 
     Ok(Some(VerifiedGloveProof {
-        result_type: glove_result.result_type.clone(),
-        enclave_info,
-        assigned_balances
+        result: glove_proof_lite.signed_result.result,
+        enclave_info
     }))
 }
 
@@ -159,7 +148,7 @@ fn parse_multi_address(bytes: &[u8]) -> Option<AccountId32> {
 fn parse_and_validate_proxy_vote(
     call: &RuntimeCall,
     expected_poll_index: u32,
-    glove_result_type: &ResultType
+    glove_vote: &GloveVote
 ) -> Option<(AccountId32, u128)> {
     let RuntimeCall::Proxy(proxy_call) = call else {
         return None;
@@ -176,7 +165,7 @@ fn parse_and_validate_proxy_vote(
     if expected_poll_index != poll_index {
         return None;
     }
-    let Some(balance) = check_on_chain_vote_is_consistent(&vote, glove_result_type) else {
+    let Some(balance) = check_on_chain_vote_is_consistent(&vote, glove_vote) else {
         return None;
     };
     Some((real_account.0.into(), balance))
@@ -184,23 +173,23 @@ fn parse_and_validate_proxy_vote(
 
 fn check_on_chain_vote_is_consistent(
     on_chain_vote: &AccountVote<u128>,
-    glove_result_type: &ResultType
+    glove_vote: &GloveVote
 ) -> Option<u128> {
-    match glove_result_type {
-        ResultType::Standard(StandardResult { aye, .. }) => {
-            match on_chain_vote {
-                // TODO Conviction multipliers
-                AccountVote::Standard { vote: Vote(direction), balance } =>
-                    (*aye && *direction == AYE || !aye && *direction == NAY).then_some(*balance),
-                _ => return None
-            }
-        }
-        ResultType::Abstain(_) => {
-            match on_chain_vote {
-                // TODO Check abstain balance?
-                AccountVote::SplitAbstain { aye: 0, nay: 0, abstain } => Some(*abstain),
-                _ => None
-            }
+    // TODO Conviction multipliers
+    match glove_vote {
+        GloveVote::Aye => match on_chain_vote {
+            AccountVote::Standard { vote: Vote(direction), balance } =>
+                (*direction == AYE).then_some(*balance),
+            _ => None
+        },
+        GloveVote::Nay => match on_chain_vote {
+            AccountVote::Standard { vote: Vote(direction), balance } =>
+                (*direction == NAY).then_some(*balance),
+            _ => None
+        },
+        GloveVote::Abstain => match on_chain_vote {
+            AccountVote::SplitAbstain { aye: 0, nay: 0, abstain } => Some(*abstain),
+            _ => None
         }
     }
 }

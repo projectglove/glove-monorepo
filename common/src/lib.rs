@@ -18,7 +18,7 @@ pub const NAY: u8 = 0;
 pub struct VoteRequest {
     pub account: AccountId32,
     pub poll_index: u32,
-    pub nonce: u128,
+    pub nonce: u128,  // TODO Far too big for the nonce
     pub aye: bool,
     pub balance: u128
 }
@@ -38,7 +38,8 @@ pub struct SignedGloveResult {
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct GloveResult {
     pub poll_index: u32,
-    pub result_type: ResultType
+    pub vote: GloveVote,
+    pub assigned_balances: Vec<AssignedBalance>
 }
 
 impl GloveResult {
@@ -48,16 +49,11 @@ impl GloveResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Encode, Decode)]
-pub enum ResultType {
-    Standard(StandardResult),
-    Abstain(AbstainResult)
-}
-
-#[derive(Debug, Clone, PartialEq, Encode, Decode)]
-pub struct StandardResult {
-    pub aye: bool,
-    pub assigned_balances: Vec<AssignedBalance>
+#[derive(Debug, Copy, Clone, PartialEq, Encode, Decode)]
+pub enum GloveVote {
+    Aye,
+    Nay,
+    Abstain
 }
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
@@ -65,11 +61,6 @@ pub struct AssignedBalance {
     pub account: AccountId32,
     pub nonce: u128,
     pub balance: u128
-}
-
-#[derive(Debug, Clone, PartialEq, Encode, Decode)]
-pub struct AbstainResult {
-    pub nonces: Vec<u128>
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]

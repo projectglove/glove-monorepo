@@ -21,8 +21,7 @@ use client_interface::metadata::runtime_types::polkadot_runtime::{ProxyType, Run
 use client_interface::RemoveVoteRequest;
 use client_interface::ServiceInfo;
 use client_interface::SubstrateNetwork;
-use common::{ResultType, StandardResult, VoteRequest};
-use ResultType::{Abstain, Standard};
+use common::{GloveVote, VoteRequest};
 use RuntimeError::Proxy;
 
 #[tokio::main]
@@ -130,12 +129,10 @@ async fn listen_for_glove_votes(
                     balance.into(),
                     network.token_decimals as i64
                 ).with_scale_round(3, RoundingMode::HalfEven);
-                match verified_glove_proof.result_type {
-                    Standard(StandardResult { aye: true, .. }) =>
-                        println!("Glove vote aye with balance {}", balance),
-                    Standard(StandardResult { aye: false, .. }) =>
-                        println!("Glove vote nay with balance {}", balance),
-                    Abstain(_) => println!("Glove abstained with balance {}", balance)
+                match verified_glove_proof.result.vote {
+                    GloveVote::Aye => println!("Glove vote aye with balance {}", balance),
+                    GloveVote::Nay => println!("Glove vote nay with balance {}", balance),
+                    GloveVote::Abstain => println!("Glove abstained with balance {}", balance),
                 }
                 if let Some(_) = &verified_glove_proof.enclave_info {
                     // TODO Check measurement

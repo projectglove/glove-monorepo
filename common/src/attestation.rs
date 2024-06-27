@@ -164,7 +164,7 @@ pub enum Error {
 mod tests {
     use Attestation::Nitro;
 
-    use crate::{AssignedBalance, GloveResult, nitro, ResultType, StandardResult};
+    use crate::{AssignedBalance, GloveResult, GloveVote, nitro};
     use crate::attestation::Attestation::Mock;
 
     use super::*;
@@ -220,13 +220,11 @@ mod tests {
             signed_result: SignedGloveResult {
                 result: GloveResult {
                     poll_index: 123,
-                    result_type: ResultType::Standard(StandardResult {
-                        aye: true,
-                        assigned_balances: vec![
-                            AssignedBalance { account: [4; 32].into(), nonce: 0, balance: 100 },
-                            AssignedBalance { account: [7; 32].into(), nonce: 1, balance: 200 }
-                        ]
-                    })
+                    vote: GloveVote::Aye,
+                    assigned_balances: vec![
+                        AssignedBalance { account: [4; 32].into(), nonce: 0, balance: 100 },
+                        AssignedBalance { account: [7; 32].into(), nonce: 1, balance: 200 }
+                    ]
                 },
                 signature: Default::default()
             },

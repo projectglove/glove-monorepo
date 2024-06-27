@@ -4,7 +4,7 @@ use bigdecimal::{BigDecimal, ToPrimitive, Zero};
 use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
 
-use common::{AbstainResult, AssignedBalance, GloveResult, ResultType, StandardResult};
+use common::{AssignedBalance, GloveResult, GloveVote};
 use enclave_interface::SignedVoteRequest;
 
 pub fn mix_votes(signed_requests: &Vec<SignedVoteRequest>) -> Result<GloveResult, Error> {
@@ -37,38 +37,38 @@ pub fn mix_votes(signed_requests: &Vec<SignedVoteRequest>) -> Result<GloveResult
     }
 
     let net_balance = ayes_balance.abs_diff(nays_balance);
-    if net_balance == 0 {
-        let nonces = signed_requests.iter().map(|r| r.request.nonce).collect::<Vec<_>>();
-        return Ok(GloveResult {
-            poll_index,
-            result_type: ResultType::Abstain(AbstainResult { nonces })
-        });
-    }
 
-    let mut net_balances: Vec<u128> = signed_requests
-        .iter()
-        .zip(randomized_balances)
-        .map(|(signed_request, randomized_balance)| {
-            let weight = randomized_balance / &total_randomized_balance;
-            // It's possible the randomized weights will lead to a value greater than the request
-            // balance. This is more likely to happen if there are fewer requests and the random
-            // multiplier is sufficiently bigger relative to the others.
-            (net_balance * weight).to_u128().unwrap().min(signed_request.request.balance)
-        })
-        .collect();
+    let net_balances = if net_balance == 0 {
+        // TODO One token amount in the network decimals for the abstain balance
+        vec![1; signed_requests.len()]
+    } else {
+        let mut net_balances = signed_requests
+            .iter()
+            .zip(randomized_balances)
+            .map(|(signed_request, randomized_balance)| {
+                let weight = randomized_balance / &total_randomized_balance;
+                // It's possible the randomized weights will lead to a value greater than the request
+                // balance. This is more likely to happen if there are fewer requests and the random
+                // multiplier is sufficiently bigger relative to the others.
+                (net_balance * weight).to_u128().unwrap().min(signed_request.request.balance)
+            })
+            .collect::<Vec<_>>();
 
-    let mut leftover_balance = net_balance - net_balances.iter().sum::<u128>();
+        let mut leftover_balance = net_balance - net_balances.iter().sum::<u128>();
 
-    let mut index = 0;
-    while leftover_balance > 0 {
-        if signed_requests[index].request.balance > net_balances[index] {
-            let balance_allowance = signed_requests[index].request.balance - net_balances[index];
-            let assign_extra_balance = leftover_balance.min(balance_allowance);
-            net_balances[index] += assign_extra_balance;
-            leftover_balance -= assign_extra_balance;
+        let mut index = 0;
+        while leftover_balance > 0 {
+            if signed_requests[index].request.balance > net_balances[index] {
+                let balance_allowance = signed_requests[index].request.balance - net_balances[index];
+                let assign_extra_balance = leftover_balance.min(balance_allowance);
+                net_balances[index] += assign_extra_balance;
+                leftover_balance -= assign_extra_balance;
+            }
+            index += 1;
         }
-        index += 1;
-    }
+
+        net_balances
+    };
 
     let assigned_balances = signed_requests
         .iter()
@@ -84,10 +84,14 @@ pub fn mix_votes(signed_requests: &Vec<SignedVoteRequest>) -> Result<GloveResult
 
     Ok(GloveResult {
         poll_index,
-        result_type: ResultType::Standard(StandardResult {
-            aye: ayes_balance > nays_balance,
-            assigned_balances
-        })
+        vote: if ayes_balance > nays_balance {
+            GloveVote::Aye
+        } else if ayes_balance < nays_balance {
+            GloveVote::Nay
+        } else {
+            GloveVote::Abstain
+        },
+        assigned_balances
     })
 }
 
@@ -119,10 +123,8 @@ mod tests {
             mix_votes(&vec![vote_request(1, 434, true, 10)]),
             Ok(GloveResult {
                 poll_index: 1,
-                result_type: ResultType::Standard(StandardResult {
-                    aye: true,
-                    assigned_balances: vec![assigned_balance(434, 10)]
-                })
+                vote: GloveVote::Aye,
+                assigned_balances: vec![assigned_balance(434, 10)]
             })
         );
     }
@@ -147,7 +149,8 @@ mod tests {
             ]),
             Ok(GloveResult {
                 poll_index: 1,
-                result_type: ResultType::Abstain(AbstainResult { nonces: vec![4, 7] })
+                vote: GloveVote::Abstain,
+                assigned_balances: vec![assigned_balance(4, 1), assigned_balance(7, 1)]
             })
         )
     }
@@ -161,10 +164,8 @@ mod tests {
             ]),
             Ok(GloveResult {
                 poll_index: 1,
-                result_type: ResultType::Standard(StandardResult {
-                    aye: true,
-                    assigned_balances: vec![assigned_balance(1, 10), assigned_balance(2, 5)]
-                })
+                vote: GloveVote::Aye,
+                assigned_balances: vec![assigned_balance(1, 10), assigned_balance(2, 5)]
             })
         );
     }
@@ -178,10 +179,8 @@ mod tests {
             ]),
             Ok(GloveResult {
                 poll_index: 1,
-                result_type: ResultType::Standard(StandardResult {
-                    aye: false,
-                    assigned_balances: vec![assigned_balance(3, 5), assigned_balance(2, 10)]
-                })
+                vote: GloveVote::Nay,
+                assigned_balances: vec![assigned_balance(3, 5), assigned_balance(2, 10)]
             })
         );
     }
@@ -194,19 +193,13 @@ mod tests {
             vote_request(1, 1, false, 26),
             vote_request(1, 4, false, 4)
         ];
-        let result_type = mix_votes(&signed_requests).unwrap().result_type;
-        println!("{:?}", result_type);
+        let result = mix_votes(&signed_requests).unwrap();
+        println!("{:?}", result);
 
-        let standard = match result_type {
-            ResultType::Standard(standard) => standard,
-            _ => panic!("Expected standard result")
-        };
-        let assigned_balances = standard.assigned_balances;
-
-        assert_eq!(standard.aye, true);
-        assert_eq!(assigned_balances.len(), 4);
-        assert_eq!(assigned_balances.iter().map(|a| a.balance).sum::<u128>(), 20);
-        assert(signed_requests, assigned_balances);
+        assert_eq!(result.vote, GloveVote::Aye);
+        assert_eq!(result.assigned_balances.len(), 4);
+        assert_eq!(result.assigned_balances.iter().map(|a| a.balance).sum::<u128>(), 20);
+        assert(signed_requests, result.assigned_balances);
     }
 
     #[test]
@@ -215,31 +208,21 @@ mod tests {
             vote_request(1, 6, false, 32),
             vote_request(1, 8, true, 15),
         ];
-        let result_type = mix_votes(&signed_requests).unwrap().result_type;
-        let standard = match result_type {
-            ResultType::Standard(standard) => standard,
-            _ => panic!("Expected standard result")
-        };
-        let assigned_balances = standard.assigned_balances;
+        let result = mix_votes(&signed_requests).unwrap();
 
-        assert_eq!(standard.aye, false);
-        assert_eq!(assigned_balances.len(), 2);
-        assert_eq!(assigned_balances.iter().map(|a| a.balance).sum::<u128>(), 17);
-
-        assert(signed_requests, assigned_balances);
+        assert_eq!(result.vote, GloveVote::Nay);
+        assert_eq!(result.assigned_balances.len(), 2);
+        assert_eq!(result.assigned_balances.iter().map(|a| a.balance).sum::<u128>(), 17);
+        assert(signed_requests, result.assigned_balances);
     }
 
     #[test]
     fn leftovers() {
-        let result_type = mix_votes(&vec![
+        let result = mix_votes(&vec![
             vote_request(1, 4, false, 5),
             vote_request(1, 2, true, 10)
-        ]).unwrap().result_type;
-        let assigned_balances = match result_type {
-            ResultType::Standard(standard) => standard.assigned_balances,
-            _ => panic!("Expected standard result")
-        };
-        assert_eq!(assigned_balances.iter().map(|a| a.balance).sum::<u128>(), 5);
+        ]).unwrap();
+        assert_eq!(result.assigned_balances.iter().map(|a| a.balance).sum::<u128>(), 5);
     }
 
     fn vote_request(poll_index: u32, nonce: u128, aye: bool, balance: u128) -> SignedVoteRequest {

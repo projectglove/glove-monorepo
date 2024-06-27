@@ -43,7 +43,7 @@ use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError::P
 use client_interface::metadata::runtime_types::sp_runtime::DispatchError as MetadataDispatchError;
 use client_interface::metadata::storage;
 use client_interface::RemoveVoteRequest;
-use common::{attestation, AYE, ExtrinsicLocation, NAY, ResultType, SignedGloveResult};
+use common::{attestation, AYE, ExtrinsicLocation, GloveVote, NAY, SignedGloveResult};
 use common::attestation::{AttestationBundle, AttestationBundleLocation, GloveProof, GloveProofLite};
 use enclave_interface::{EnclaveRequest, EnclaveResponse, SignedVoteRequest};
 use RuntimeError::ConvictionVoting;
@@ -400,29 +400,20 @@ async fn submit_glove_result_on_chain(
     signed_requests: &Vec<SignedVoteRequest>,
     signed_glove_result: SignedGloveResult
 ) -> Result<(), ProxyError> {
-    let ResultType::Standard(standard) = &signed_glove_result.result.result_type else {
-        // TODO Vote abstain with a minimum balance.
-        // TODO Should the enclave produce the extrinic calls structs? It would prove the enclave
-        //  intiated the abstain votes. Otherwise, users are trusting the host service is correctly
-        //  interpreting the enclave's None mixing output.
-        panic!("Net zero mix votes");
-    };
-
+    // TODO Should the enclave produce the extrinic calls structs? It would prove the enclave
+    //  intiated the abstain votes. Otherwise, users are trusting the host service is correctly
+    //  interpreting the enclave's None mixing output.
     let mut batched_calls = Vec::with_capacity(signed_requests.len() + 1);
 
+    let glove_result = &signed_glove_result.result;
     // Add a proxied vote call for each signed vote request
-    for (signed_req, assigned_bal) in signed_requests.iter().zip(&standard.assigned_balances) {
+    for (signed_req, assigned_bal) in signed_requests.iter().zip(&glove_result.assigned_balances) {
         batched_calls.push(RuntimeCall::Proxy(ProxyCall::proxy {
             real: account_to_address(signed_req.request.account.clone()),
             force_proxy_type: None,
             call: Box::new(RuntimeCall::ConvictionVoting(ConvictionVotingCall::vote {
                 poll_index,
-                vote: AccountVote::Standard {
-                    // TODO Deal with mixed_balance of zero
-                    // TODO conviction multiplier
-                    vote: Vote(if standard.aye { AYE } else { NAY }),
-                    balance: assigned_bal.balance
-                }
+                vote: to_on_chain_vote(&glove_result.vote, assigned_bal.balance)
             })),
         }));
     }
@@ -453,6 +444,16 @@ async fn submit_glove_result_on_chain(
     confirm_proxy_executed(&context.network, &events)
 }
 
+// TODO conviction multiplier
+// TODO Deal with mixed_balance of zero
+fn to_on_chain_vote(vote: &GloveVote, balance: u128) -> AccountVote<u128> {
+    match vote {
+        GloveVote::Aye => AccountVote::Standard { vote: Vote(AYE), balance },
+        GloveVote::Nay => AccountVote::Standard { vote: Vote(NAY), balance },
+        GloveVote::Abstain => AccountVote::SplitAbstain { aye: 0, nay: 0, abstain: balance }
+    }
+}
+
 async fn submit_attestation_bundle_location_on_chain(
     context: &GloveContext
 ) -> Result<AttestationBundleLocation, SubxtError> {
@@ -466,7 +467,7 @@ async fn submit_attestation_bundle_location_on_chain(
                 block_index: events.extrinsic_index(),
             })
         });
-    info!("Attestation bundle location: {:?}", result);
+    info!("Stored attestation bundle: {:?}", result);
     result
 }
 
