@@ -161,6 +161,10 @@ pub enum Error {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
+    use sp_core::crypto::AccountId32;
+
     use Attestation::Nitro;
 
     use crate::{AssignedBalance, GloveResult, GloveVote, nitro};
@@ -168,11 +172,99 @@ mod tests {
 
     use super::*;
 
-    static SAMPLE_NITRO_ATTESTATION_BYTES: &[u8] = include_bytes!("../sample-aws-nitro-attestation-doc");
+    static SECURE_NITRO_ATTESTATION_BUNDLE_BYTES: &[u8] = include_bytes!("../test-resources/secure-nitro-attestation-bundle-envelope");
+    static DEBUG_NITRO_ATTESTATION_BUNDLE_BYTES: &[u8] = include_bytes!("../test-resources/debug-nitro-attestation-bundle-envelope");
+    static GLOVE_PROOF_LITE_BYTES: &[u8] = include_bytes!("../test-resources/glove-proof-lite");
+    static RAW_NITRO_ATTESTATION_DOC_BYTES: &[u8] = include_bytes!("../test-resources/raw-aws-nitro-attestation-doc");
 
-    // TODO Test for Nitro debug mode
-    // TODO Test valid glove proof
-    // TODO Test invalid glove proof
+    #[test]
+    fn secure_nitro_attestation_bundle_sample() {
+        let attestation_bundle = AttestationBundle::decode_envelope(SECURE_NITRO_ATTESTATION_BUNDLE_BYTES).unwrap();
+        attestation_bundle.verify().unwrap();
+        assert_eq!(attestation_bundle.attested_data.genesis_hash, H256::from_str("6408de7737c59c238890533af25896a2c20608d8b380bb01029acb392781063e").unwrap());
+        assert!(matches!(attestation_bundle.attestation, Nitro(_)));
+
+        let envelope_encoding = attestation_bundle.encode_envelope();
+        let roundtrip = AttestationBundle::decode_envelope(&envelope_encoding).unwrap();
+        // Basic check for the compression
+        assert!(envelope_encoding.len() < attestation_bundle.encode().len());
+        assert_eq!(attestation_bundle, roundtrip);
+    }
+
+    #[test]
+    fn valid_glove_proof_lite_sample() {
+        let glove_proof_lite = GloveProofLite::decode_envelope(GLOVE_PROOF_LITE_BYTES).unwrap();
+
+        assert_eq!(
+            glove_proof_lite.signed_result.result,
+            GloveResult {
+                poll_index: 176,
+                vote: GloveVote::Nay,
+                assigned_balances: vec![
+                    AssignedBalance {
+                        account: AccountId32::from_str("28836d6f19d5cd8dd8b26da754c63ae337c6f938a7dc6a12e439ad8a1c69fb0d").unwrap(),
+                        nonce: 2025044891,
+                        balance: 1417837595019
+                    },
+                    AssignedBalance {
+                        account: AccountId32::from_str("841f65d84a0ffa95b378923a0d879f188d2a4aa5cb0f97df84fb296788cb6e3e").unwrap(),
+                        nonce: 1585538499,
+                        balance: 6527253046307
+                    },
+                    AssignedBalance {
+                        account: AccountId32::from_str("ca22927dff5da60838b78763a2b5ebdf080fa4f35bcbfc8c36b3b6c59a85cd6f").unwrap(),
+                        nonce:  925271422,
+                        balance: 3893999358674
+                    }
+                ]
+            }
+        );
+
+        assert_eq!(
+            glove_proof_lite.attestation_location,
+            AttestationBundleLocation::SubstrateRemark(ExtrinsicLocation {
+                block_hash: H256::from_str("17094038b6636ea8598337e2d620c07f5e7db3ca73fb8f91e7a4a47095c8c072").unwrap(),
+                block_index: 2,
+            })
+        );
+
+        let roundtrip = GloveProofLite::decode_envelope(&glove_proof_lite.encode_envelope()).unwrap();
+        assert_eq!(glove_proof_lite, roundtrip);
+    }
+
+    #[test]
+    fn valid_glove_proof_sample() {
+        let attestation_bundle = AttestationBundle::decode_envelope(SECURE_NITRO_ATTESTATION_BUNDLE_BYTES).unwrap();
+        let glove_proof_lite = GloveProofLite::decode_envelope(GLOVE_PROOF_LITE_BYTES).unwrap();
+        let glove_proof = GloveProof {
+            signed_result: glove_proof_lite.signed_result,
+            attestation_bundle
+        };
+        glove_proof.verify().unwrap();
+    }
+
+    #[test]
+    fn invalid_glove_proof() {
+        let attestation_bundle = AttestationBundle::decode_envelope(SECURE_NITRO_ATTESTATION_BUNDLE_BYTES).unwrap();
+        let original_glove_result = GloveProofLite::decode_envelope(GLOVE_PROOF_LITE_BYTES).unwrap().signed_result.result;
+
+        let mut modified_glove_result = original_glove_result.clone();
+        modified_glove_result.vote = GloveVote::Aye;
+        assert_ne!(original_glove_result, modified_glove_result);
+
+        let invalid_glove_proof = GloveProof {
+            signed_result: modified_glove_result.sign(&ed25519::Pair::generate().0),
+            attestation_bundle
+        };
+        assert!(matches!(invalid_glove_proof.verify(), Err(Error::GloveProof)));
+    }
+
+    #[test]
+    fn debug_nitro_attestation_bundle_sample() {
+        let attestation_bundle = AttestationBundle::decode_envelope(DEBUG_NITRO_ATTESTATION_BUNDLE_BYTES).unwrap();
+        assert!(matches!(attestation_bundle.attestation, Nitro(_)));
+        assert!(matches!(attestation_bundle.verify(), Err(Error::InsecureMode)));
+    }
 
     #[test]
     fn mock_attestation_bundle() {
@@ -193,49 +285,8 @@ mod tests {
                 genesis_hash: Default::default(),
                 signing_key: ed25519::Pair::generate().0.public()
             },
-            attestation: Nitro(nitro::Attestation::try_from(SAMPLE_NITRO_ATTESTATION_BYTES).unwrap())
+            attestation: Nitro(nitro::Attestation::try_from(RAW_NITRO_ATTESTATION_DOC_BYTES).unwrap())
         };
         assert!(matches!(attestation_bundle.verify(), Err(Error::AttestedData)));
-    }
-
-    #[test]
-    fn attestation_bundle_envelope_encoding() {
-        let original = AttestationBundle {
-            attested_data: AttestedData {
-                genesis_hash: Default::default(),
-                signing_key: ed25519::Pair::generate().0.public()
-            },
-            attestation: Nitro(nitro::Attestation::try_from(SAMPLE_NITRO_ATTESTATION_BYTES).unwrap())
-        };
-
-        let envelope_encoding = original.encode_envelope();
-        let scale_encoding = original.encode();
-        let roundtrip = AttestationBundle::decode_envelope(&envelope_encoding).unwrap();
-        // Basic check for the compression
-        assert!(envelope_encoding.len() < scale_encoding.len());
-        assert_eq!(original, roundtrip);
-    }
-
-    #[test]
-    fn glove_proof_lite_envelope_encoding() {
-        let original = GloveProofLite {
-            signed_result: SignedGloveResult {
-                result: GloveResult {
-                    poll_index: 123,
-                    vote: GloveVote::Aye,
-                    assigned_balances: vec![
-                        AssignedBalance { account: [4; 32].into(), nonce: 0, balance: 100 },
-                        AssignedBalance { account: [7; 32].into(), nonce: 1, balance: 200 }
-                    ]
-                },
-                signature: Default::default()
-            },
-            attestation_location: AttestationBundleLocation::SubstrateRemark(ExtrinsicLocation {
-                block_hash: Default::default(),
-                block_index: 0,
-            })
-        };
-        let roundtrip = GloveProofLite::decode_envelope(&original.encode_envelope()).unwrap();
-        assert_eq!(original, roundtrip);
     }
 }

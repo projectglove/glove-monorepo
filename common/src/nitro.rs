@@ -134,11 +134,11 @@ mod tests {
 
     use super::*;
 
-    static SAMPLE_NITRO_ATTESTATION_BYTES: &[u8] = include_bytes!("../sample-aws-nitro-attestation-doc");
+    static RAW_NITRO_ATTESTATION_BYTES: &[u8] = include_bytes!("../test-resources/raw-aws-nitro-attestation-doc");
 
     #[test]
     fn decode_and_verify_attestation() {
-        let doc = Attestation::try_from(SAMPLE_NITRO_ATTESTATION_BYTES).unwrap().verify().unwrap();
+        let doc = Attestation::try_from(RAW_NITRO_ATTESTATION_BYTES).unwrap().verify().unwrap();
         println!("{:?}", doc);
         assert_eq!(doc.pcrs.get(&0).unwrap().to_vec(), hex::decode("dd1c94beae9a589b37f6601ecf73c297ff0bf41a8872f737fabf3c9a2a96eb3b1dcdabc8e33ba1f7654b528518b8b9ed").unwrap());
         assert_eq!(doc.pcrs.get(&1).unwrap().to_vec(), hex::decode("52b919754e1643f4027eeee8ec39cc4a2cb931723de0c93ce5cc8d407467dc4302e86490c01c0d755acfe10dbf657546").unwrap());
@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn attestation_scale_encoding() {
-        let nitro_attestation = Attestation(CoseSign1::from_bytes(SAMPLE_NITRO_ATTESTATION_BYTES).unwrap());
+        let nitro_attestation = Attestation(CoseSign1::from_bytes(RAW_NITRO_ATTESTATION_BYTES).unwrap());
         let encoded = nitro_attestation.encode();
         let nitro_attestation2 = Attestation::decode(&mut &encoded[..]).unwrap();
         assert_eq!(nitro_attestation.verify().unwrap(), nitro_attestation2.verify().unwrap());

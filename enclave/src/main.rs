@@ -21,9 +21,10 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Receive the genesis hash for the chain the enclave is supposedly working on from the host.
-    // It will check this hash matches against the vote requests from the clients. It will also
-    // include it in the attestation bundle so that the Glove proofs are pinned to this chain.
+    // Receive from the host the genesis hash for the chain the enclave is working on. It actually
+    // has no way of knowing if this is what's intended, until clients send in their requests
+    // specifying the same hash. Only then is the genesis hash in the attestation proven to be
+    // correct.
     let genesis_hash = stream.read::<H256>().await?;
     // Generate a random signing key and embed it in the attestation document.
     let (signing_pair, _) = ed25519::Pair::generate();
@@ -122,12 +123,10 @@ fn process_mix_votes(
     genesis_hash: &H256
 ) -> EnclaveResponse {
     println!("Received request: {:?}", vote_requests);
+    // TODO This check should be in enclave::mix_votes and tested
     let all_valid = vote_requests
         .iter()
         .all(|signed_request| {
-            // When the enclave received the genesis hash from the host, it had no way of knowing
-            // if it was correct. If all the client vote requests happen to specify the same hash
-            // then it proves that it was correct.
             signed_request.request.genesis_hash == *genesis_hash
                 && signed_request.is_signature_valid()
         });
