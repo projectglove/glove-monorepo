@@ -12,7 +12,7 @@ aws-nitro-enclaves-cose.workspace = true
 aws-nitro-enclaves-nsm-api.workspace = true
 serde_bytes.workspace = true
 serde_cbor.workspace = true
-openssl.workspace = true
+openssl = { workspace = true, features = ["vendored"] }
 sha2.workspace = true
 thiserror.workspace = true
 flate2.workspace = true

@@ -121,6 +121,8 @@ fn process_mix_votes(
     signing_key: &ed25519::Pair
 ) -> EnclaveResponse {
     println!("Received request: {:?}", vote_requests);
+    // TODO This check should be in enclave::mix_votes and tested
+    // TODO Check no duplicate accounts
     let signatures_valid = vote_requests
         .iter()
         .all(|signed_request| signed_request.is_signature_valid());
