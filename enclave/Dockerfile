@@ -1,7 +1,4 @@
-# TODO Use alpine instead, which will reduce the size of the image and potentially only require 512MB of enclave memory.
-#  However, this requires building the enclave with musl, which has been a bit tricky to get working on Amazon Linux 2023.
-FROM debian:stable-20240612-slim
-# TODO If we can't get alphine working then manually install libssl3 from a specific version to keep the build reproducible.
-RUN apt-get update && apt-get install libssl3 -y
-COPY ../target/release/enclave .
+# For reproducible builds, pin the linux distro to an exact digest, here representing v3.20.1
+FROM --platform=linux/amd64 alpine@sha256:dabf91b69c191a1a0a1628fd6bdd029c0c4018041c7f052870bb13c5a222ae76
+COPY ../target/x86_64-unknown-linux-musl/release/enclave .
 CMD ["./enclave"]

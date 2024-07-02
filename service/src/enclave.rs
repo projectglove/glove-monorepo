@@ -38,7 +38,7 @@ pub mod nitro {
         let mut cmd = Command::new("nitro-cli");
         cmd.arg("run-enclave");
         cmd.arg("--cpu-count").arg("2");
-        cmd.arg("--memory").arg("1024");
+        cmd.arg("--memory").arg("512");
         cmd.arg("--eif-path").arg(local_file("glove.eif")?);
         if debug_mode {
             cmd.arg("--debug-mode");

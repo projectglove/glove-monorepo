@@ -124,6 +124,7 @@ fn process_mix_votes(
 ) -> EnclaveResponse {
     println!("Received request: {:?}", vote_requests);
     // TODO This check should be in enclave::mix_votes and tested
+    // TODO Check no duplicate accounts
     let all_valid = vote_requests
         .iter()
         .all(|signed_request| {

@@ -86,8 +86,15 @@ enum EnclaveMode {
     Mock
 }
 
-// TODO Listen, or poll, for any member who votes directly
+// TODO Listen, or poll, for any member who votes directly.
+// TODO  And only execute on-chain vote batch without them if the service has submitted on-chain already
 // TODO Test what an actual limit is on batched votes
+// TODO Load test with ~100 accounts voting on a single poll
+// TODO Sign the enclave image
+// TODO Persist voting requests
+// TODO Restoring state on startup from private store and on-chain
+// TODO When does the mixing occur? Is it configurable?
+// TODO Remove on-chain votes due to error conditions detected by the proxy
 
 // TODO Deal with RPC disconnect:
 // 2024-06-19T11:36:12.533696Z DEBUG rustls::common_state: Sending warning alert CloseNotify
@@ -199,6 +206,7 @@ async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
 
 // TODO Reject for zero balance
 // TODO Reject if new vote request reaches max batch size limit for poll
+// TODO Reject if voted directly or via another proxy already
 async fn vote(
     State(context): State<Arc<GloveContext>>,
     Json(payload): Json<client_interface::SignedVoteRequest>
@@ -301,9 +309,6 @@ fn schedule_vote_mixing(context: Arc<GloveContext>, poll: Poll) {
     });
 }
 
-// TODO Add another endpoint which a client can query with their nonce to see the status of
-//  of their on-chain vote.
-// TODO If it's a success then it could include the extrinsic coordinates.
 async fn mix_votes(context: &GloveContext, poll: &Poll) {
     loop {
         match try_mix_votes(context, poll).await {
