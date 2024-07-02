@@ -167,7 +167,7 @@ mod tests {
 
     use Attestation::Nitro;
 
-    use crate::{AssignedBalance, GloveResult, GloveVote, nitro};
+    use crate::{AssignedBalance, Conviction, GloveResult, GloveVote, nitro};
     use crate::attestation::Attestation::Mock;
 
     use super::*;
@@ -198,23 +198,26 @@ mod tests {
         assert_eq!(
             glove_proof_lite.signed_result.result,
             GloveResult {
-                poll_index: 176,
+                poll_index: 185,
                 vote: GloveVote::Nay,
                 assigned_balances: vec![
                     AssignedBalance {
                         account: AccountId32::from_str("28836d6f19d5cd8dd8b26da754c63ae337c6f938a7dc6a12e439ad8a1c69fb0d").unwrap(),
-                        nonce: 2025044891,
-                        balance: 1417837595019
+                        nonce: 1406474393,
+                        balance: 870545507137,
+                        conviction: Conviction::None
                     },
                     AssignedBalance {
                         account: AccountId32::from_str("841f65d84a0ffa95b378923a0d879f188d2a4aa5cb0f97df84fb296788cb6e3e").unwrap(),
-                        nonce: 1585538499,
-                        balance: 6527253046307
+                        nonce: 3000217442,
+                        balance: 7277014506261,
+                        conviction: Conviction::Locked1x
                     },
                     AssignedBalance {
                         account: AccountId32::from_str("ca22927dff5da60838b78763a2b5ebdf080fa4f35bcbfc8c36b3b6c59a85cd6f").unwrap(),
-                        nonce:  925271422,
-                        balance: 3893999358674
+                        nonce:  3352555571,
+                        balance: 3691529986602,
+                        conviction: Conviction::Locked3x
                     }
                 ]
             }
@@ -223,7 +226,7 @@ mod tests {
         assert_eq!(
             glove_proof_lite.attestation_location,
             AttestationBundleLocation::SubstrateRemark(ExtrinsicLocation {
-                block_hash: H256::from_str("17094038b6636ea8598337e2d620c07f5e7db3ca73fb8f91e7a4a47095c8c072").unwrap(),
+                block_hash: H256::from_str("d7663e131edda194eabbec3ac5695e5b31c9e576e144025956e0cdbf90d4f9cb").unwrap(),
                 block_index: 2,
             })
         );

@@ -53,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
         println!("Request: {:?}", request);
         let response = match request {
             EnclaveRequest::MixVotes(vote_requests) =>
-                process_mix_votes(&vote_requests, &signing_pair, &genesis_hash),
+                process_mix_votes(&vote_requests, &signing_pair, genesis_hash),
         };
         stream.write(&response).await?;
     }
@@ -120,23 +120,11 @@ mod mock {
 fn process_mix_votes(
     vote_requests: &Vec<SignedVoteRequest>,
     signing_key: &ed25519::Pair,
-    genesis_hash: &H256
+    genesis_hash: H256
 ) -> EnclaveResponse {
     println!("Received request: {:?}", vote_requests);
-    // TODO This check should be in enclave::mix_votes and tested
-    // TODO Check no duplicate accounts
-    let all_valid = vote_requests
-        .iter()
-        .all(|signed_request| {
-            signed_request.request.genesis_hash == *genesis_hash
-                && signed_request.is_signature_valid()
-        });
-    if all_valid {
-        match enclave::mix_votes(&vote_requests) {
-            Ok(glove_result) => EnclaveResponse::GloveResult(glove_result.sign(signing_key)),
-            Err(error) => EnclaveResponse::Error(Error::Mixing(error.to_string()))
-        }
-    } else {
-        EnclaveResponse::Error(Error::InvalidRequests)
+    match enclave::mix_votes(genesis_hash, &vote_requests) {
+        Ok(glove_result) => EnclaveResponse::GloveResult(glove_result.sign(signing_key)),
+        Err(error) => EnclaveResponse::Error(Error::Mixing(error.to_string()))
     }
 }

@@ -11,8 +11,8 @@ pub mod attestation;
 pub mod nitro;
 
 pub const ENCODING_VERSION: u8 = 1;
-pub const AYE: u8 = 128;
-pub const NAY: u8 = 0;
+pub const BASE_AYE: u8 = 128;
+pub const BASE_NAY: u8 = 0;
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
 pub struct VoteRequest {
@@ -23,7 +23,19 @@ pub struct VoteRequest {
     /// Nonce value to prevent replay attacks. Only needs to be unique for the same poll.
     pub nonce: u32,
     pub aye: bool,
-    pub balance: u128
+    pub balance: u128,
+    pub conviction: Conviction,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
+pub enum Conviction {
+    None,
+    Locked1x,
+    Locked2x,
+    Locked3x,
+    Locked4x,
+    Locked5x,
+    Locked6x,
 }
 
 impl VoteRequest {
@@ -32,9 +44,10 @@ impl VoteRequest {
         genesis_hash: H256,
         poll_index: u32,
         aye: bool,
-        balance: u128
+        balance: u128,
+        conviction: Conviction
     ) -> Self {
-        Self { account, genesis_hash, poll_index, nonce: random(), aye, balance }
+        Self { account, genesis_hash, poll_index, nonce: random(), aye, balance, conviction }
     }
 }
 
@@ -70,7 +83,8 @@ pub enum GloveVote {
 pub struct AssignedBalance {
     pub account: AccountId32,
     pub nonce: u32,
-    pub balance: u128
+    pub balance: u128,
+    pub conviction: Conviction
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]

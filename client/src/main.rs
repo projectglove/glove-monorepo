@@ -21,7 +21,7 @@ use client_interface::metadata::runtime_types::polkadot_runtime::{ProxyType, Run
 use client_interface::RemoveVoteRequest;
 use client_interface::ServiceInfo;
 use client_interface::SubstrateNetwork;
-use common::{GloveVote, VoteRequest};
+use common::{Conviction, GloveVote, VoteRequest};
 use RuntimeError::Proxy;
 
 #[tokio::main]
@@ -85,7 +85,8 @@ async fn vote(
         network.api.genesis_hash(),
         vote_cmd.poll_index,
         vote_cmd.aye,
-        balance
+        balance,
+        parse_conviction(vote_cmd.conviction)?
     );
     let encoded_request = request.encode();
     let signature = MultiSignature::Sr25519(network.keypair.sign(encoded_request.as_slice()).0);
@@ -259,9 +260,25 @@ struct VoteCmd {
     /// The amount of tokens to lock for the vote (as a decimal in the major token unit)
     #[arg(long)]
     balance: BigDecimal,
+    /// The vote conviction multiplier
+    #[arg(long, default_value_t = 0)]
+    conviction: u8,
     /// Wait for the vote to be included in the Glove mixing process and confirmation received.
     #[arg(long)]
     await_glove_confirmation: bool
+}
+
+fn parse_conviction(value: u8) -> Result<Conviction> {
+    match value {
+        0 => Ok(Conviction::None),
+        1 => Ok(Conviction::Locked1x),
+        2 => Ok(Conviction::Locked2x),
+        3 => Ok(Conviction::Locked3x),
+        4 => Ok(Conviction::Locked4x),
+        5 => Ok(Conviction::Locked5x),
+        6 => Ok(Conviction::Locked6x),
+        _ => bail!("Conviction must be between 0 and 6 inclusive")
+    }
 }
 
 #[derive(Display, Debug)]

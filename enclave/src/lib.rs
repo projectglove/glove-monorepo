@@ -1,19 +1,25 @@
+use std::collections::HashSet;
 use std::str::FromStr;
 
 use bigdecimal::{BigDecimal, ToPrimitive, Zero};
 use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
+use sp_core::H256;
 
 use common::{AssignedBalance, GloveResult, GloveVote};
 use enclave_interface::SignedVoteRequest;
 
-pub fn mix_votes(signed_requests: &Vec<SignedVoteRequest>) -> Result<GloveResult, Error> {
+pub fn mix_votes(
+    genesis_hash: H256,
+    signed_requests: &Vec<SignedVoteRequest>
+) -> Result<GloveResult, Error> {
     let poll_index = signed_requests.first().ok_or(Error::Empty)?.request.poll_index;
 
     let mut rng = thread_rng();
     // Generate a random multiplier between 1x and 2x.
     let multipler_range = Uniform::from(1.0..2.0);
 
+    let mut accounts = HashSet::new();
     let mut ayes_balance = 0u128;
     let mut nays_balance = 0u128;
     let mut randomized_balances: Vec<BigDecimal> = Vec::new();
@@ -22,6 +28,15 @@ pub fn mix_votes(signed_requests: &Vec<SignedVoteRequest>) -> Result<GloveResult
     for signed_request in signed_requests {
         if signed_request.request.poll_index != poll_index {
             return Err(Error::MultiplePolls);
+        }
+        if !signed_request.is_signature_valid() {
+            return Err(Error::InvalidSignature);
+        }
+        if signed_request.request.genesis_hash != genesis_hash {
+            return Err(Error::GensisHashMismatch);
+        }
+        if !accounts.insert(signed_request.request.account.clone()) {
+            return Err(Error::DuplicateAccount);
         }
         let balance = signed_request.request.balance;
         if signed_request.request.aye {
@@ -77,7 +92,8 @@ pub fn mix_votes(signed_requests: &Vec<SignedVoteRequest>) -> Result<GloveResult
             AssignedBalance {
                 account: signed_request.request.account.clone(),
                 nonce: signed_request.request.nonce,
-                balance
+                balance,
+                conviction: signed_request.request.conviction,
             }
         })
         .collect::<Vec<_>>();
@@ -101,86 +117,91 @@ pub enum Error {
     Empty,
     #[error("Vote requests are for multiple polls")]
     MultiplePolls,
+    #[error("Signature on a signed vote request is not valid")]
+    InvalidSignature,
+    #[error("Genesis hash on a vote request doesn't match expected value")]
+    GensisHashMismatch,
+    #[error("Duplicate account in vote requests")]
+    DuplicateAccount,
 }
 
 #[cfg(test)]
 mod tests {
+    use parity_scale_codec::Encode;
+    use sp_core::{ed25519, Pair};
     use sp_runtime::MultiSignature;
-    use sp_runtime::testing::sr25519;
 
-    use common::VoteRequest;
+    use common::{Conviction, VoteRequest};
+    use common::Conviction::{Locked1x, Locked3x, Locked5x};
+    use Conviction::Locked6x;
 
     use super::*;
 
+    const GENESIS_HASH: H256 = H256::zero();
+    const POLL_INDEX: u32 = 1;
+
     #[test]
     fn empty() {
-        assert_eq!(mix_votes(&vec![]), Err(Error::Empty));
+        assert_eq!(mix_votes(GENESIS_HASH, &vec![]), Err(Error::Empty));
     }
 
     #[test]
     fn single() {
+        let signed_requests = vec![vote(434, true, 10, Locked6x)];
         assert_eq!(
-            mix_votes(&vec![vote_request(1, 434, true, 10)]),
+            mix_votes(GENESIS_HASH, &signed_requests),
             Ok(GloveResult {
-                poll_index: 1,
+                poll_index: POLL_INDEX,
                 vote: GloveVote::Aye,
-                assigned_balances: vec![assigned_balance(434, 10)]
+                assigned_balances: vec![assigned(&signed_requests[0], 10)]
             })
         );
     }
 
     #[test]
-    fn multiple_polls() {
-        assert_eq!(
-            mix_votes(&vec![
-                vote_request(1, 1, true, 10),
-                vote_request(2, 2, false, 10)
-            ]),
-            Err(Error::MultiplePolls)
-        );
-    }
-
-    #[test]
     fn two_equal_but_opposite_votes() {
+        let signed_requests = vec![
+            vote(4, true, 10, Locked5x),
+            vote(7, false, 10, Conviction::None)
+        ];
         assert_eq!(
-            mix_votes(&vec![
-                vote_request(1, 4, true, 10),
-                vote_request(1, 7, false, 10)
-            ]),
+            mix_votes(GENESIS_HASH, &signed_requests),
             Ok(GloveResult {
-                poll_index: 1,
+                poll_index: POLL_INDEX,
                 vote: GloveVote::Abstain,
-                assigned_balances: vec![assigned_balance(4, 1), assigned_balance(7, 1)]
+                assigned_balances: vec![assigned(&signed_requests[0], 1), assigned(&signed_requests[1], 1)]
             })
         )
     }
 
     #[test]
     fn two_aye_votes() {
+        let signed_requests = vec![
+            vote(1, true, 10, Locked1x),
+            vote(2, true, 5, Locked1x)
+        ];
         assert_eq!(
-            mix_votes(&vec![
-                vote_request(1, 1, true, 10),
-                vote_request(1, 2, true, 5)
-            ]),
+            mix_votes(GENESIS_HASH, &signed_requests),
             Ok(GloveResult {
-                poll_index: 1,
+                poll_index: POLL_INDEX,
                 vote: GloveVote::Aye,
-                assigned_balances: vec![assigned_balance(1, 10), assigned_balance(2, 5)]
+                assigned_balances: vec![assigned(&signed_requests[0], 10), assigned(&signed_requests[1], 5)]
             })
         );
     }
 
     #[test]
     fn two_nay_votes() {
+        let signed_requests = vec![
+            vote(3, false, 5, Locked3x),
+            vote(2, false, 10, Locked1x)
+        ];
         assert_eq!(
-            mix_votes(&vec![
-                vote_request(1, 3, false, 5),
-                vote_request(1, 2, false, 10)
-            ]),
+            mix_votes(GENESIS_HASH, &signed_requests),
             Ok(GloveResult {
-                poll_index: 1,
+                poll_index: POLL_INDEX,
                 vote: GloveVote::Nay,
-                assigned_balances: vec![assigned_balance(3, 5), assigned_balance(2, 10)]
+                assigned_balances: vec![assigned(&signed_requests[0], 5), assigned(&signed_requests[1], 10)]
             })
         );
     }
@@ -188,12 +209,12 @@ mod tests {
     #[test]
     fn aye_votes_bigger_than_nye_votes() {
         let signed_requests = vec![
-            vote_request(1, 3, true, 30),
-            vote_request(1, 7, true, 20),
-            vote_request(1, 1, false, 26),
-            vote_request(1, 4, false, 4)
+            vote(3, true, 30, Locked3x),
+            vote(7, true, 20, Locked5x),
+            vote(1, false, 26, Conviction::None),
+            vote(4, false, 4, Locked6x)
         ];
-        let result = mix_votes(&signed_requests).unwrap();
+        let result = mix_votes(GENESIS_HASH, &signed_requests).unwrap();
         println!("{:?}", result);
 
         assert_eq!(result.vote, GloveVote::Aye);
@@ -205,10 +226,10 @@ mod tests {
     #[test]
     fn aye_votes_smaller_than_nye_votes() {
         let signed_requests = vec![
-            vote_request(1, 6, false, 32),
-            vote_request(1, 8, true, 15),
+            vote(6, false, 32, Locked1x),
+            vote(8, true, 15, Locked3x),
         ];
-        let result = mix_votes(&signed_requests).unwrap();
+        let result = mix_votes(GENESIS_HASH, &signed_requests).unwrap();
 
         assert_eq!(result.vote, GloveVote::Nay);
         assert_eq!(result.assigned_balances.len(), 2);
@@ -218,30 +239,95 @@ mod tests {
 
     #[test]
     fn leftovers() {
-        let result = mix_votes(&vec![
-            vote_request(1, 4, false, 5),
-            vote_request(1, 2, true, 10)
+        let result = mix_votes(GENESIS_HASH, &vec![
+            vote(4, false, 5, Locked1x),
+            vote(2, true, 10, Locked1x),
         ]).unwrap();
         assert_eq!(result.assigned_balances.iter().map(|a| a.balance).sum::<u128>(), 5);
     }
 
-    fn vote_request(poll_index: u32, nonce: u32, aye: bool, balance: u128) -> SignedVoteRequest {
+    #[test]
+    fn multiple_polls() {
+        assert_eq!(
+            mix_votes(GENESIS_HASH, &vec![
+                custom_vote(ed25519::Pair::generate().0, GENESIS_HASH, 1, 432, true, 10, Locked1x),
+                custom_vote(ed25519::Pair::generate().0, GENESIS_HASH, 2, 431, false, 10, Locked3x)
+            ]),
+            Err(Error::MultiplePolls)
+        );
+    }
+
+    #[test]
+    fn invalid_signature() {
+        let signed_request = vote(1, true, 10, Locked1x);
+        let mut invalid_signed_request = signed_request.clone();
+        invalid_signed_request.signature = MultiSignature::Ed25519(ed25519::Signature::from([1; 64]));
+
+        assert_eq!(
+            mix_votes(GENESIS_HASH, &vec![invalid_signed_request]),
+            Err(Error::InvalidSignature)
+        );
+    }
+
+    #[test]
+    fn genesis_hash_mismatch() {
+        assert_eq!(
+            mix_votes(H256::from([1; 32]), &vec![vote(434, true, 10, Locked6x)]),
+            Err(Error::GensisHashMismatch)
+        );
+    }
+
+    #[test]
+    fn duplicate_account() {
+        let (signing_key, _) = ed25519::Pair::generate();
+        assert_eq!(
+            mix_votes(GENESIS_HASH, &vec![
+                custom_vote(signing_key, GENESIS_HASH, 1, 432, true, 10, Locked1x),
+                custom_vote(signing_key, GENESIS_HASH, 1, 431, false, 10, Locked3x)
+            ]),
+            Err(Error::DuplicateAccount)
+        );
+    }
+
+    fn vote(
+        nonce: u32,
+        aye: bool,
+        balance: u128,
+        conviction: Conviction
+    ) -> SignedVoteRequest {
+        let (signing_key, _) = ed25519::Pair::generate();
+        custom_vote(signing_key, GENESIS_HASH, POLL_INDEX, nonce, aye, balance, conviction)
+    }
+
+    fn custom_vote(
+        signing_key: ed25519::Pair,
+        genesis_hash: H256,
+        poll_index: u32,
+        nonce: u32,
+        aye: bool,
+        balance: u128,
+        conviction: Conviction
+    ) -> SignedVoteRequest {
         let request = VoteRequest {
-            account: [1; 32].into(),
-            genesis_hash: Default::default(),
+            account: signing_key.public().into(),
+            genesis_hash,
             poll_index,
             nonce,
             aye,
-            balance
+            balance,
+            conviction
         };
-        SignedVoteRequest {
-            request,
-            signature: MultiSignature::Sr25519(sr25519::Signature::default())
-        }
+        let signature = MultiSignature::Ed25519(signing_key.sign(&request.encode()));
+        SignedVoteRequest { request, signature }
     }
 
-    fn assigned_balance(nonce: u32, balance: u128) -> AssignedBalance {
-        AssignedBalance { account: [1; 32].into(), nonce, balance }
+    fn assigned(signed_request: &SignedVoteRequest, balance: u128) -> AssignedBalance {
+        AssignedBalance {
+            account: signed_request.request.account.clone(),
+            nonce: signed_request.request.nonce,
+            balance,
+            conviction: signed_request.request.conviction
+        }
     }
 
     fn assert(signed_requests: Vec<SignedVoteRequest>, assigned_balances: Vec<AssignedBalance>) {
