@@ -80,7 +80,13 @@ async fn vote(
     let balance = (&vote_cmd.balance * 10u128.pow(network.token_decimals as u32))
         .to_u128()
         .context("Vote balance is too big")?;
-    let request = VoteRequest::new(network.account(), vote_cmd.poll_index, vote_cmd.aye, balance);
+    let request = VoteRequest::new(
+        network.account(),
+        network.api.genesis_hash(),
+        vote_cmd.poll_index,
+        vote_cmd.aye,
+        balance
+    );
     let encoded_request = request.encode();
     let signature = MultiSignature::Sr25519(network.keypair.sign(encoded_request.as_slice()).0);
     let response = http_client
@@ -235,6 +241,9 @@ enum Command {
     /// Remove the account from the Glove proxy.
     LeaveGlove
 
+    // TODO Info command which prints to screen the Glove service info, including the verified attestation
+    //  bundle and a check to make sure the genesis hash is consistent
+    
     // TODO Command to resume waiting for Glove vote, based on stored nonce. It will first check
     //  storage to see if the vote has already been mixed, and then continue listening. If the poll
     //  is closed then it should verify the vote was mixed by Glove and then exit.

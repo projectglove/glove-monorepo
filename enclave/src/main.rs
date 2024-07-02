@@ -2,8 +2,7 @@ use std::env::args;
 use std::io;
 
 use cfg_if::cfg_if;
-use parity_scale_codec::{DecodeAll, Encode};
-use sp_core::{ed25519, Pair};
+use sp_core::{ed25519, H256, Pair};
 
 use common::attestation::{Attestation, AttestationBundle, AttestedData};
 use enclave_interface::{EnclaveRequest, EnclaveResponse, EnclaveStream, Error, SignedVoteRequest};
@@ -11,36 +10,52 @@ use enclave_interface::{EnclaveRequest, EnclaveResponse, EnclaveStream, Error, S
 // The Glove enclave is a simple process which listens for vote mixing requests.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    cfg_if! {
+        if #[cfg(target_os = "linux")] {
+            let mut stream = match args().nth(1) {
+                Some(socket_file) => mock::establish_connection(socket_file).await?,
+                None => nitro::establish_connection().await?
+            };
+        } else {
+            let mut stream = mock::establish_connection(args().nth(1).unwrap()).await?;
+        }
+    }
+
+    // Receive from the host the genesis hash for the chain the enclave is working on. It actually
+    // has no way of knowing if this is what's intended, until clients send in their requests
+    // specifying the same hash. Only then is the genesis hash in the attestation proven to be
+    // correct.
+    let genesis_hash = stream.read::<H256>().await?;
     // Generate a random signing key and embed it in the attestation document.
     let (signing_pair, _) = ed25519::Pair::generate();
     let attested_data = AttestedData {
+        genesis_hash,
         signing_key: signing_pair.public()
     };
 
     cfg_if! {
         if #[cfg(target_os = "linux")] {
-            let (mut stream, attestation) = match args().nth(1) {
-                Some(socket_file) => {
-                    (mock::establish_connection(socket_file).await?, Attestation::Mock)
-                },
-                None => {
-                    (nitro::establish_connection().await?, nitro::create_attestation(&attested_data)?)
-                }
+            let attestation = match args().nth(1) {
+                Some(_) => Attestation::Mock,
+                None => nitro::create_attestation(&attested_data)?
             };
         } else {
-            let mut stream = mock::establish_connection(args().nth(1).unwrap()).await?;
             let attestation = Attestation::Mock;
         }
     }
-
-    let attestation_bundle = AttestationBundle { attested_data, attestation };
+    // Send the attestation bundle to the host as the first thing it receives.
+    stream.write(&AttestationBundle { attested_data, attestation }).await?;
 
     // Loop, processing requests from the host. If the host termintes, it will close the stream,
     // break the loop and terminate the enclave as well.
     loop {
-        let encoded_request = stream.read_len_prefix_bytes().await?;
-        let response = process_request(encoded_request, &signing_pair, &attestation_bundle);
-        stream.write_len_prefix_bytes(&response.encode()).await?;
+        let request = stream.read::<EnclaveRequest>().await?;
+        println!("Request: {:?}", request);
+        let response = match request {
+            EnclaveRequest::MixVotes(vote_requests) =>
+                process_mix_votes(&vote_requests, &signing_pair, &genesis_hash),
+        };
+        stream.write(&response).await?;
     }
 }
 
@@ -50,6 +65,7 @@ mod nitro {
     use aws_nitro_enclaves_nsm_api::api::{Request, Response};
     use aws_nitro_enclaves_nsm_api::driver::{nsm_exit, nsm_init, nsm_process_request};
     use nix::sys::socket::VsockAddr;
+    use parity_scale_codec::Encode;
     use serde_bytes::ByteBuf;
     use sha2::{Digest, Sha256};
     use tokio_vsock::VsockStream;
@@ -70,7 +86,7 @@ mod nitro {
 
         let request = Request::Attestation {
             public_key: None,
-            user_data: Some(ByteBuf::from(attested_data_hash)),
+            user_data: ByteBuf::from(attested_data_hash).into(),
             nonce: None,
         };
         println!("Requesting attestation document from NSM: {:?}", request);
@@ -101,35 +117,25 @@ mod mock {
     }
 }
 
-
-fn process_request(
-    encoded_request: Vec<u8>,
-    signing_key: &ed25519::Pair,
-    attestation_bundle: &AttestationBundle
-) -> EnclaveResponse {
-    let request_decode_result = EnclaveRequest::decode_all(&mut encoded_request.as_slice());
-    println!("Decoded request: {:?}", request_decode_result);
-    match request_decode_result {
-        Ok(EnclaveRequest::Attestation) => EnclaveResponse::Attestation(attestation_bundle.clone()),
-        Ok(EnclaveRequest::MixVotes(vote_requests)) => process_mix_votes(&vote_requests, signing_key),
-        Err(scale_error) => EnclaveResponse::Error(Error::Scale(scale_error.to_string())),
-    }
-}
-
 fn process_mix_votes(
     vote_requests: &Vec<SignedVoteRequest>,
-    signing_key: &ed25519::Pair
+    signing_key: &ed25519::Pair,
+    genesis_hash: &H256
 ) -> EnclaveResponse {
     println!("Received request: {:?}", vote_requests);
-    let signatures_valid = vote_requests
+    // TODO This check should be in enclave::mix_votes and tested
+    let all_valid = vote_requests
         .iter()
-        .all(|signed_request| signed_request.is_signature_valid());
-    if signatures_valid {
+        .all(|signed_request| {
+            signed_request.request.genesis_hash == *genesis_hash
+                && signed_request.is_signature_valid()
+        });
+    if all_valid {
         match enclave::mix_votes(&vote_requests) {
             Ok(glove_result) => EnclaveResponse::GloveResult(glove_result.sign(signing_key)),
             Err(error) => EnclaveResponse::Error(Error::Mixing(error.to_string()))
         }
     } else {
-        EnclaveResponse::Error(Error::InvalidSignature)
+        EnclaveResponse::Error(Error::InvalidRequests)
     }
 }

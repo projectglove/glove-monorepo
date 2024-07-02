@@ -228,6 +228,7 @@ mod tests {
     fn vote_request(poll_index: u32, nonce: u32, aye: bool, balance: u128) -> SignedVoteRequest {
         let request = VoteRequest {
             account: [1; 32].into(),
+            genesis_hash: Default::default(),
             poll_index,
             nonce,
             aye,

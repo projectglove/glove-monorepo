@@ -1,12 +1,12 @@
 use std::io;
+use std::io::ErrorKind;
 
-use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
+use parity_scale_codec::{Decode, DecodeAll, Encode, MaxEncodedLen};
 use sp_runtime::MultiSignature;
 use sp_runtime::traits::Verify;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use common::{SignedGloveResult, VoteRequest};
-use common::attestation::AttestationBundle;
 
 /// The parent EC2 instance always has a CID of 3.
 pub const NITRO_HOST_CID: u32 = 3;
@@ -16,7 +16,6 @@ pub const NITRO_PORT: u32 = 5000;
 
 #[derive(Debug, Clone, Encode, Decode)]
 pub enum EnclaveRequest {
-    Attestation,
     MixVotes(Vec<SignedVoteRequest>),
 }
 
@@ -34,7 +33,6 @@ impl SignedVoteRequest {
 
 #[derive(Debug, Clone, Encode, Decode)]
 pub enum EnclaveResponse {
-    Attestation(AttestationBundle),
     GloveResult(SignedGloveResult),
     Error(Error)
 }
@@ -46,7 +44,8 @@ pub enum EnclaveStream {
 }
 
 impl EnclaveStream {
-    pub async fn write_len_prefix_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
+    pub async fn write<M: Encode>(&mut self, message: &M) -> io::Result<()> {
+        let bytes = &message.encode();
         match self {
             #[cfg(target_os = "linux")]
             EnclaveStream::Vsock(stream) => write_len_prefix_bytes(stream, bytes).await,
@@ -54,12 +53,14 @@ impl EnclaveStream {
         }
     }
 
-    pub async fn read_len_prefix_bytes(&mut self) -> io::Result<Vec<u8>> {
-        match self {
+    pub async fn read<M: DecodeAll>(&mut self) -> io::Result<M> {
+        let bytes =  match self {
             #[cfg(target_os = "linux")]
-            EnclaveStream::Vsock(stream) => read_len_prefix_bytes(stream).await,
-            EnclaveStream::Unix(stream) => read_len_prefix_bytes(stream).await
-        }
+            EnclaveStream::Vsock(stream) => read_len_prefix_bytes(stream).await?,
+            EnclaveStream::Unix(stream) => read_len_prefix_bytes(stream).await?
+        };
+        M::decode_all(&mut bytes.as_slice())
+            .map_err(|scale_error| io::Error::new(ErrorKind::InvalidData, scale_error))
     }
 }
 
@@ -85,8 +86,8 @@ where
 
 #[derive(thiserror::Error, Clone, Debug, Encode, Decode)]
 pub enum Error {
-    #[error("Invalid signature on voting requests")]
-    InvalidSignature,
+    #[error("Invalid voting requests")]
+    InvalidRequests,
     #[error("Scale decoding error: {0}")]
     Scale(String),
     #[error("Vote mixing error: {0}")]

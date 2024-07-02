@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use parity_scale_codec::Decode;
+use parity_scale_codec::Error as ScaleError;
 use serde::{Deserialize, Serialize};
 use serde_with::base64::Base64;
 use serde_with::serde_as;
@@ -169,6 +170,7 @@ pub struct ServiceInfo {
     pub network_url: String
 }
 
+// TODO Remove this duplicate
 #[serde_as]
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct SignedVoteRequest {
@@ -179,7 +181,7 @@ pub struct SignedVoteRequest {
 }
 
 impl SignedVoteRequest {
-    pub fn decode(&self) -> Result<Option<(VoteRequest, MultiSignature)>, parity_scale_codec::Error> {
+    pub fn decode(&self) -> Result<Option<(VoteRequest, MultiSignature)>, ScaleError> {
         let request = VoteRequest::decode(&mut self.request.as_slice())?;
         let signature = MultiSignature::decode(&mut self.signature.as_slice())?;
         let valid = signature.verify(self.request.as_slice(), &request.account);
@@ -207,7 +209,7 @@ mod tests {
     fn signed_vote_request_json_verify() {
         let (pair, _) = sr25519::Pair::generate();
 
-        let request = VoteRequest::new(pair.public().into(), 11, true, 100);
+        let request = VoteRequest::new(pair.public().into(), Default::default(), 11, true, 100);
         let encoded_request = request.encode();
         let signature: MultiSignature = pair.sign(encoded_request.as_slice()).into();
 
@@ -240,7 +242,7 @@ mod tests {
         let (pair1, _) = sr25519::Pair::generate();
         let (pair2, _) = sr25519::Pair::generate();
 
-        let request = VoteRequest::new(pair1.public().into(), 11, true, 100);
+        let request = VoteRequest::new(pair1.public().into(), Default::default(), 11, true, 100);
         let encoded_request = request.encode();
         let signature: MultiSignature = pair2.sign(encoded_request.as_slice()).into();
 
@@ -258,15 +260,17 @@ mod tests {
 
     #[test]
     fn modified_request() {
-        let (pair1, _) = sr25519::Pair::generate();
-        let (pair2, _) = sr25519::Pair::generate();
+        let (pair, _) = sr25519::Pair::generate();
 
-        let original_request = VoteRequest::new(pair1.public().into(), 11, true, 100);
-        let modified_request = VoteRequest::new(pair1.public().into(), 11, false, 100);
-        let signature: MultiSignature = pair2.sign(original_request.encode().as_slice()).into();
+        let original_request = VoteRequest::new(pair.public().into(), H256::default(), 11, true, 100);
+        let signature: MultiSignature = pair.sign(&original_request.encode()).into();
 
         let signed_request = SignedVoteRequest {
-            request: modified_request.encode(),
+            request: {
+                let mut modified_request = original_request.clone();
+                modified_request.aye = !original_request.aye;
+                modified_request.encode()
+            },
             signature: signature.encode()
         };
 
