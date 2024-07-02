@@ -8,7 +8,7 @@ use parity_scale_codec::{DecodeAll, Encode};
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
-use enclave_interface::{EnclaveRequest, EnclaveResponse, EnclaveStream};
+use enclave_interface::EnclaveStream;
 
 #[derive(Clone)]
 pub struct EnclaveHandle {
@@ -16,13 +16,10 @@ pub struct EnclaveHandle {
 }
 
 impl EnclaveHandle {
-    pub async fn send_request(&self, request: &EnclaveRequest) -> io::Result<EnclaveResponse> {
+    pub async fn send_receive<RSP: DecodeAll>(&self, request: &impl Encode) -> io::Result<RSP> {
         let mut stream = self.stream.lock().await;
-        stream.write_len_prefix_bytes(&request.encode()).await?;
-        let encoded_response = stream.read_len_prefix_bytes().await?;
-        let response = EnclaveResponse::decode_all(&mut encoded_response.as_slice())
-            .map_err(|scale_error| IoError::new(ErrorKind::InvalidData, scale_error))?;
-        Ok(response)
+        stream.write(request).await?;
+        stream.read::<RSP>().await
     }
 }
 
