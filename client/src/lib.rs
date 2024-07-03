@@ -19,7 +19,7 @@ use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeCall;
 use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeCall::ConvictionVoting;
 use client_interface::metadata::system::calls::types::Remark;
 use client_interface::metadata::utility::calls::types::Batch;
-use common::{attestation, AYE, ExtrinsicLocation, GloveResult, GloveVote, NAY};
+use common::{AssignedBalance, attestation, BASE_AYE, Conviction, ExtrinsicLocation, GloveResult, GloveVote};
 use common::attestation::{AttestationBundle, AttestationBundleLocation, GloveProof, GloveProofLite};
 use runtime_types::pallet_conviction_voting::vote::Vote;
 
@@ -35,7 +35,7 @@ impl VerifiedGloveProof {
         self.result
             .assigned_balances
             .iter()
-            .find_map(|avb| (avb.account == *account && avb.nonce == nonce).then_some(avb.balance))
+            .find_map(|ab| (ab.account == *account && ab.nonce == nonce).then_some(ab.balance))
     }
 }
 
@@ -58,18 +58,18 @@ pub async fn try_verify_glove_result(
         return Ok(None);
     }
 
-    let on_chain_vote_balances: HashMap<AccountId32, u128> = batch.calls
+    let account_votes: HashMap<AccountId32, &AccountVote<u128>> = batch.calls
         .iter()
-        .filter_map(|call| {
-            parse_and_validate_proxy_vote(call, glove_result.poll_index, &glove_result.vote)
-        })
+        .filter_map(|call| parse_and_validate_proxy_account_vote(call, glove_result.poll_index))
         .collect::<HashMap<_, _>>();
     // TODO Check for duplicate on-chain votes for the same account
 
     // Make sure each assigned balance from the Glove proof is accounted for on-chain.
     for assigned_balance in &glove_result.assigned_balances {
-        on_chain_vote_balances.get(&assigned_balance.account)
-            .filter(|&balance| *balance == assigned_balance.balance)
+        account_votes.get(&assigned_balance.account)
+            .filter(|&&account_vote| {
+                is_account_vote_consistent(account_vote, glove_result.vote, assigned_balance)
+            })
             .ok_or(Error::InconsistentVotes)?;
     }
 
@@ -147,11 +147,10 @@ fn parse_multi_address(bytes: &[u8]) -> Option<AccountId32> {
         })
 }
 
-fn parse_and_validate_proxy_vote(
+fn parse_and_validate_proxy_account_vote(
     call: &RuntimeCall,
     expected_poll_index: u32,
-    glove_vote: &GloveVote
-) -> Option<(AccountId32, u128)> {
+) -> Option<(AccountId32, &AccountVote<u128>)> {
     let RuntimeCall::Proxy(proxy_call) = call else {
         return None;
     };
@@ -167,32 +166,57 @@ fn parse_and_validate_proxy_vote(
     if expected_poll_index != poll_index {
         return None;
     }
-    let Some(balance) = check_on_chain_vote_is_consistent(&vote, glove_vote) else {
-        return None;
-    };
-    Some((real_account.0.into(), balance))
+    Some((real_account.0.into(), vote))
 }
 
-fn check_on_chain_vote_is_consistent(
-    on_chain_vote: &AccountVote<u128>,
-    glove_vote: &GloveVote
-) -> Option<u128> {
-    // TODO Conviction multipliers
+fn is_account_vote_consistent(
+    account_vote: &AccountVote<u128>,
+    glove_vote: GloveVote,
+    assigned_balance: &AssignedBalance
+) -> bool {
     match glove_vote {
-        GloveVote::Aye => match on_chain_vote {
-            AccountVote::Standard { vote: Vote(direction), balance } =>
-                (*direction == AYE).then_some(*balance),
-            _ => None
+        GloveVote::Aye => {
+            parse_standard_account_vote(account_vote) ==
+                Some((true, assigned_balance.balance, assigned_balance.conviction))
         },
-        GloveVote::Nay => match on_chain_vote {
-            AccountVote::Standard { vote: Vote(direction), balance } =>
-                (*direction == NAY).then_some(*balance),
-            _ => None
+        GloveVote::Nay => {
+            parse_standard_account_vote(account_vote) ==
+                Some((false, assigned_balance.balance, assigned_balance.conviction))
         },
-        GloveVote::Abstain => match on_chain_vote {
-            AccountVote::SplitAbstain { aye: 0, nay: 0, abstain } => Some(*abstain),
-            _ => None
+        GloveVote::Abstain => {
+            parse_abstain_account_vote(account_vote) == Some(assigned_balance.balance)
         }
+    }
+}
+
+fn parse_standard_account_vote(vote: &AccountVote<u128>) -> Option<(bool, u128, Conviction)> {
+    let AccountVote::Standard { vote: Vote(direction), balance } = vote else {
+        return None;
+    };
+    if *direction >= BASE_AYE {
+        Some((true, *balance, parse_conviction(*direction - BASE_AYE)?))
+    } else {
+        Some((false, *balance, parse_conviction(*direction)?))
+    }
+}
+
+fn parse_conviction(offset: u8) -> Option<Conviction> {
+    match offset {
+        0 => Some(Conviction::None),
+        1 => Some(Conviction::Locked1x),
+        2 => Some(Conviction::Locked2x),
+        3 => Some(Conviction::Locked3x),
+        4 => Some(Conviction::Locked4x),
+        5 => Some(Conviction::Locked5x),
+        6 => Some(Conviction::Locked6x),
+        _ => None
+    }
+}
+
+fn parse_abstain_account_vote(account_vote: &AccountVote<u128>) -> Option<u128> {
+    match account_vote {
+        AccountVote::SplitAbstain { aye: 0, nay: 0, abstain } => Some(*abstain),
+        _ => None
     }
 }
 

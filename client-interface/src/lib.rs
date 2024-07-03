@@ -203,13 +203,15 @@ mod tests {
     use serde_json::{json, Value};
     use sp_core::{Pair, sr25519};
 
+    use common::Conviction::{Locked1x, Locked3x, Locked6x};
+
     use super::*;
 
     #[test]
     fn signed_vote_request_json_verify() {
         let (pair, _) = sr25519::Pair::generate();
 
-        let request = VoteRequest::new(pair.public().into(), Default::default(), 11, true, 100);
+        let request = VoteRequest::new(pair.public().into(), H256::zero(), 11, true, 100, Locked3x);
         let encoded_request = request.encode();
         let signature: MultiSignature = pair.sign(encoded_request.as_slice()).into();
 
@@ -242,7 +244,7 @@ mod tests {
         let (pair1, _) = sr25519::Pair::generate();
         let (pair2, _) = sr25519::Pair::generate();
 
-        let request = VoteRequest::new(pair1.public().into(), Default::default(), 11, true, 100);
+        let request = VoteRequest::new(pair1.public().into(), H256::zero(), 11, true, 100, Locked1x);
         let encoded_request = request.encode();
         let signature: MultiSignature = pair2.sign(encoded_request.as_slice()).into();
 
@@ -262,7 +264,7 @@ mod tests {
     fn modified_request() {
         let (pair, _) = sr25519::Pair::generate();
 
-        let original_request = VoteRequest::new(pair.public().into(), H256::default(), 11, true, 100);
+        let original_request = VoteRequest::new(pair.public().into(), H256::zero(), 11, true, 100, Locked6x);
         let signature: MultiSignature = pair.sign(&original_request.encode()).into();
 
         let signed_request = SignedVoteRequest {

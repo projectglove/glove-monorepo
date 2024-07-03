@@ -42,7 +42,7 @@ use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError::P
 use client_interface::metadata::runtime_types::sp_runtime::DispatchError as MetadataDispatchError;
 use client_interface::metadata::storage;
 use client_interface::RemoveVoteRequest;
-use common::{attestation, AYE, ExtrinsicLocation, GloveVote, NAY, SignedGloveResult};
+use common::{AssignedBalance, attestation, BASE_AYE, Conviction, ExtrinsicLocation, GloveResult, GloveVote, BASE_NAY, SignedGloveResult};
 use common::attestation::{AttestationBundle, AttestationBundleLocation, GloveProof, GloveProofLite};
 use enclave_interface::{EnclaveRequest, EnclaveResponse, SignedVoteRequest};
 use RuntimeError::ConvictionVoting;
@@ -332,12 +332,7 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, Mixi
 
     let signed_glove_result = mix_votes_in_enclave(&context, &poll_requests).await?;
 
-    let result = submit_glove_result_on_chain(
-        &context,
-        poll.index,
-        &poll_requests,
-        signed_glove_result
-    ).await;
+    let result = submit_glove_result_on_chain(&context, &poll_requests, signed_glove_result).await;
     if result.is_ok() {
         info!("Vote mixing for poll {} succeeded", poll.index);
         return Ok(true);
@@ -399,7 +394,6 @@ async fn mix_votes_in_enclave(
 
 async fn submit_glove_result_on_chain(
     context: &GloveContext,
-    poll_index: u32,
     signed_requests: &Vec<SignedVoteRequest>,
     signed_glove_result: SignedGloveResult
 ) -> Result<(), ProxyError> {
@@ -410,15 +404,8 @@ async fn submit_glove_result_on_chain(
 
     let glove_result = &signed_glove_result.result;
     // Add a proxied vote call for each signed vote request
-    for (signed_req, assigned_bal) in signed_requests.iter().zip(&glove_result.assigned_balances) {
-        batched_calls.push(RuntimeCall::Proxy(ProxyCall::proxy {
-            real: account_to_address(signed_req.request.account.clone()),
-            force_proxy_type: None,
-            call: Box::new(RuntimeCall::ConvictionVoting(ConvictionVotingCall::vote {
-                poll_index,
-                vote: to_on_chain_vote(&glove_result.vote, assigned_bal.balance)
-            })),
-        }));
+    for assigned_balance in &glove_result.assigned_balances {
+        batched_calls.push(to_proxied_vote_call(glove_result, assigned_balance));
     }
 
     let attestation_location = context.state.attestation_bundle_location(|| async {
@@ -447,12 +434,34 @@ async fn submit_glove_result_on_chain(
     confirm_proxy_executed(&context.network, &events)
 }
 
-// TODO conviction multiplier
 // TODO Deal with mixed_balance of zero
-fn to_on_chain_vote(vote: &GloveVote, balance: u128) -> AccountVote<u128> {
-    match vote {
-        GloveVote::Aye => AccountVote::Standard { vote: Vote(AYE), balance },
-        GloveVote::Nay => AccountVote::Standard { vote: Vote(NAY), balance },
+fn to_proxied_vote_call(result: &GloveResult, assigned_balance: &AssignedBalance) -> RuntimeCall {
+    RuntimeCall::Proxy(
+        ProxyCall::proxy {
+            real: account_to_address(assigned_balance.account.clone()),
+            force_proxy_type: None,
+            call: Box::new(RuntimeCall::ConvictionVoting(ConvictionVotingCall::vote {
+                poll_index: result.poll_index,
+                vote: to_account_vote(result.vote, assigned_balance)
+            })),
+        }
+    )
+}
+
+fn to_account_vote(glove_vote: GloveVote, assigned_balance: &AssignedBalance) -> AccountVote<u128> {
+    let offset = match assigned_balance.conviction {
+        Conviction::None => 0,
+        Conviction::Locked1x => 1,
+        Conviction::Locked2x => 2,
+        Conviction::Locked3x => 3,
+        Conviction::Locked4x => 4,
+        Conviction::Locked5x => 5,
+        Conviction::Locked6x => 6
+    };
+    let balance = assigned_balance.balance;
+    match glove_vote {
+        GloveVote::Aye => AccountVote::Standard { vote: Vote(BASE_AYE + offset), balance },
+        GloveVote::Nay => AccountVote::Standard { vote: Vote(BASE_NAY + offset), balance },
         GloveVote::Abstain => AccountVote::SplitAbstain { aye: 0, nay: 0, abstain: balance }
     }
 }

@@ -86,8 +86,6 @@ where
 
 #[derive(thiserror::Error, Clone, Debug, Encode, Decode)]
 pub enum Error {
-    #[error("Invalid voting requests")]
-    InvalidRequests,
     #[error("Scale decoding error: {0}")]
     Scale(String),
     #[error("Vote mixing error: {0}")]
