@@ -14,9 +14,9 @@ Enclave Image successfully created.
 {
   "Measurements": {
     "HashAlgorithm": "Sha384 { ... }",
-    "PCR0": "df7badf3a14d1a3b979ff00cd0e37e9cafd89da7a4b1379361bf309a4cdd92fa7f02f33cbb3cf317e7fcaa4881285673",
+    "PCR0": "6deb9e0a0fd109d1a82f998a0404fc32dffba38fc6895d768f23dc06fcbbdf4817cdb72c3144ba5fe2bb74ea874526aa",
     "PCR1": "4b4d5b3661b3efc12920900c80e126e4ce783c522de6c02a2a5bf7af3a2b9327b86776f188e4be1c1c404a129dbda493",
-    "PCR2": "064632aaf6cdcfea926d7130dac648842831071aa3f077fce7fe6a5cf667535a170d62f142c3be953e73ac09a0d9ecda"
+    "PCR2": "5d3e7186e65b71930ae738a001ae263e1d263686e86e3f447a91b7a9bde7df03d473233016c5891680a967e671f0c27b"
   }
 }
 ```
@@ -27,7 +27,7 @@ running a Glove enclave on genuine AWS Nitro hardware.
 
 > [!NOTE]
 > The enclave image measurement for the latest build is
-> `df7badf3a14d1a3b979ff00cd0e37e9cafd89da7a4b1379361bf309a4cdd92fa7f02f33cbb3cf317e7fcaa4881285673`.
+> `6deb9e0a0fd109d1a82f998a0404fc32dffba38fc6895d768f23dc06fcbbdf4817cdb72c3144ba5fe2bb74ea874526aa`.
 
 # Running Glove
 

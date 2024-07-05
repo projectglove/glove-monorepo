@@ -8,7 +8,7 @@ use sp_runtime::AccountId32;
 use tokio::sync::Mutex;
 
 use common::attestation::AttestationBundleLocation;
-use enclave_interface::SignedVoteRequest;
+use common::SignedVoteRequest;
 
 pub mod enclave;
 

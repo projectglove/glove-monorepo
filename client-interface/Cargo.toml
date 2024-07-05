@@ -7,18 +7,16 @@ edition = "2021"
 [dependencies]
 common = { path = "../common" }
 anyhow.workspace = true
-rand.workspace = true
 sp-core.workspace = true
-sp-runtime.workspace = true
 ss58-registry.workspace = true
 subxt.workspace = true
 subxt-core.workspace = true
 subxt-signer.workspace = true
 thiserror.workspace = true
 serde.workspace = true
-serde_with.workspace = true
-parity-scale-codec.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
-base64.workspace = true
+hex.workspace = true
+rand.workspace = true
+parity-scale-codec.workspace = true

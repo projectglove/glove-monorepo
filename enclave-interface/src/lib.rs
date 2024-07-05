@@ -1,12 +1,10 @@
 use std::io;
 use std::io::ErrorKind;
 
-use parity_scale_codec::{Decode, DecodeAll, Encode, MaxEncodedLen};
-use sp_runtime::MultiSignature;
-use sp_runtime::traits::Verify;
+use parity_scale_codec::{Decode, DecodeAll, Encode};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use common::{SignedGloveResult, VoteRequest};
+use common::{SignedGloveResult, SignedVoteRequest};
 
 /// The parent EC2 instance always has a CID of 3.
 pub const NITRO_HOST_CID: u32 = 3;
@@ -17,18 +15,6 @@ pub const NITRO_PORT: u32 = 5000;
 #[derive(Debug, Clone, Encode, Decode)]
 pub enum EnclaveRequest {
     MixVotes(Vec<SignedVoteRequest>),
-}
-
-#[derive(Debug, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
-pub struct SignedVoteRequest {
-    pub request: VoteRequest,
-    pub signature: MultiSignature
-}
-
-impl SignedVoteRequest {
-    pub fn is_signature_valid(&self) -> bool {
-        self.signature.verify(&*self.request.encode(), &self.request.account)
-    }
 }
 
 #[derive(Debug, Clone, Encode, Decode)]

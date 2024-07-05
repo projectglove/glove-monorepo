@@ -7,21 +7,22 @@ use DispatchError::Module;
 use reqwest::{Client, StatusCode, Url};
 use sp_core::crypto::AccountId32;
 use sp_core::Encode;
+use sp_runtime::MultiSignature;
 use strum::Display;
 use subxt::error::DispatchError;
 use subxt::Error::Runtime;
-use subxt::utils::MultiSignature;
 use subxt_signer::sr25519::Keypair;
 
 use client::{Error, try_verify_glove_result};
-use client_interface::{account_to_address, is_glove_member, SignedVoteRequest};
+use client_interface::{account_to_address, is_glove_member};
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::Duplicate;
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::NotFound;
 use client_interface::metadata::runtime_types::polkadot_runtime::{ProxyType, RuntimeError};
 use client_interface::RemoveVoteRequest;
 use client_interface::ServiceInfo;
 use client_interface::SubstrateNetwork;
-use common::{Conviction, GloveVote, VoteRequest};
+use common::{attestation, Conviction, GloveVote, SignedVoteRequest, VoteRequest};
+use common::attestation::{Attestation, EnclaveInfo};
 use RuntimeError::Proxy;
 
 #[tokio::main]
@@ -36,16 +37,27 @@ async fn main() -> Result<SuccessOutput> {
         .error_for_status()?
         .json::<ServiceInfo>().await?;
 
-    let network = SubstrateNetwork::connect(service_info.network_url.clone(), args.secret_phrase).await?;
+    let network = SubstrateNetwork::connect(
+        service_info.network_url.clone(),
+        args.secret_phrase
+    ).await?;
 
     match args.command {
-        Command::JoinGlove =>
-            join_glove(&service_info, &network).await,
-        Command::Vote(vote_cmd) =>
-            vote(&args.glove_url, &http_client, &network, vote_cmd, &service_info.proxy_account).await,
-        Command::RemoveVote { poll_index } =>
-            remove_vote(&args.glove_url, &http_client, &network, poll_index).await,
-        Command::LeaveGlove => leave_glove(&service_info, &network).await
+        Command::JoinGlove => {
+            join_glove(&service_info, &network).await
+        }
+        Command::Vote(vote_cmd) => {
+            vote(&args.glove_url, &http_client, &network, vote_cmd, &service_info.proxy_account).await
+        },
+        Command::RemoveVote { poll_index } => {
+            remove_vote(&args.glove_url, &http_client, &network, poll_index).await
+        },
+        Command::LeaveGlove => {
+            leave_glove(&service_info, &network).await
+        }
+        Command::Info => {
+            info(&service_info)
+        }
     }
 }
 
@@ -88,11 +100,16 @@ async fn vote(
         balance,
         parse_conviction(vote_cmd.conviction)?
     );
-    let encoded_request = request.encode();
-    let signature = MultiSignature::Sr25519(network.keypair.sign(encoded_request.as_slice()).0);
+    let nonce = request.nonce;
+
+    let signature = MultiSignature::Sr25519(network.account_key.sign(&request.encode()).0.into());
+    let signed_request = SignedVoteRequest { request, signature };
+    if !signed_request.verify() {
+        bail!("Something has gone wrong with the signature")
+    }
     let response = http_client
         .post(url_with_path(glove_url, "vote"))
-        .json(&SignedVoteRequest { request: encoded_request, signature: signature.encode() })
+        .json(&signed_request)
         .send().await
         .context("Unable to send vote request")?;
 
@@ -100,9 +117,9 @@ async fn vote(
         bail!(response.text().await?)
     }
     if vote_cmd.await_glove_confirmation {
-        listen_for_glove_votes(network, &vote_cmd, request.nonce, proxy_account).await?;
+        listen_for_glove_votes(network, &vote_cmd, nonce, proxy_account).await?;
     }
-    return Ok(SuccessOutput::Voted { nonce: request.nonce });
+    return Ok(SuccessOutput::Voted { nonce });
 }
 
 // TODO Stop waiting when the poll is closed.
@@ -198,6 +215,27 @@ async fn leave_glove(service_info: &ServiceInfo, network: &SubstrateNetwork) -> 
     }
 }
 
+fn info(service_info: &ServiceInfo) -> Result<SuccessOutput> {
+    let ab = &service_info.attestation_bundle;
+    let enclave_info = match ab.verify() {
+        Ok(EnclaveInfo::Nitro(enclave_info)) => {
+            &format!("AWS Nitro Enclave ({})", hex::encode(enclave_info.image_measurement))
+        },
+        Err(attestation::Error::InsecureMode) => match ab.attestation {
+            Attestation::Nitro(_) => "Debug AWS Nitro Enclave (INSECURE)",
+            Attestation::Mock => "Mock (INSECURE)"
+        },
+        Err(attestation_error) => &format!("Error verifying attestation: {}", attestation_error)
+    };
+
+    println!("Glove proxy account:   {}", service_info.proxy_account);
+    println!("Enclave:               {}", enclave_info);
+    println!("Substrate network URL: {}", service_info.network_url);
+    println!("Genesis hash:          {}", hex::encode(ab.attested_data.genesis_hash));
+
+    Ok(SuccessOutput::None)
+}
+
 fn url_with_path(url: &Url, path: &str) -> Url {
     let mut with_path = url.clone();
     with_path.set_path(path);
@@ -240,11 +278,11 @@ enum Command {
 
     // TODO Also remove any active votes, which requires a remove-all-votes request?
     /// Remove the account from the Glove proxy.
-    LeaveGlove
+    LeaveGlove,
 
-    // TODO Info command which prints to screen the Glove service info, including the verified attestation
-    //  bundle and a check to make sure the genesis hash is consistent
-    
+    /// Print information about the Glove service.
+    Info
+
     // TODO Command to resume waiting for Glove vote, based on stored nonce. It will first check
     //  storage to see if the vote has already been mixed, and then continue listening. If the poll
     //  is closed then it should verify the vote was mixed by Glove and then exit.
@@ -281,7 +319,7 @@ fn parse_conviction(value: u8) -> Result<Conviction> {
     }
 }
 
-#[derive(Display, Debug)]
+#[derive(Display, Debug, PartialEq)]
 enum SuccessOutput {
     #[strum(to_string = "Account has joined Glove proxy")]
     JoinedGlove,
@@ -295,11 +333,14 @@ enum SuccessOutput {
     LeftGlove,
     #[strum(to_string = "Account was not a Glove proxy member")]
     NotGloveMember,
+    None
 }
 
 impl Termination for SuccessOutput {
     fn report(self) -> ExitCode {
-        println!("{}", self);
+        if self != SuccessOutput::None {
+            println!("{}", self);
+        }
         ExitCode::SUCCESS
     }
 }
