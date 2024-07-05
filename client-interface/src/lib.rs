@@ -2,14 +2,8 @@ use std::fmt::Debug;
 use std::str::FromStr;
 
 use anyhow::{Context, Result};
-use parity_scale_codec::Decode;
-use parity_scale_codec::Error as ScaleError;
 use serde::{Deserialize, Serialize};
-use serde_with::base64::Base64;
-use serde_with::serde_as;
 use sp_core::crypto::{AccountId32, Ss58Codec};
-use sp_runtime::MultiSignature;
-use sp_runtime::traits::Verify;
 use ss58_registry::{Ss58AddressFormat, Ss58AddressFormatRegistry, Token};
 use subxt::Error as SubxtError;
 use subxt::ext::scale_decode::DecodeAsType;
@@ -19,9 +13,9 @@ use subxt_core::config::PolkadotConfig;
 use subxt_core::tx::payload::Payload;
 use subxt_core::utils::MultiAddress;
 use subxt_signer::SecretUri;
-use subxt_signer::sr25519::Keypair;
+use subxt_signer::sr25519;
 
-use common::VoteRequest;
+use common::attestation::AttestationBundle;
 use metadata::runtime_types::polkadot_runtime::ProxyType;
 use metadata::runtime_types::polkadot_runtime::RuntimeCall;
 use metadata::runtime_types::polkadot_runtime::RuntimeError;
@@ -31,8 +25,8 @@ use metadata::utility::events::BatchInterrupted;
 #[subxt::subxt(runtime_metadata_path = "../assets/polkadot-metadata.scale")]
 pub mod metadata {}
 
-pub fn parse_secret_phrase(str: &str) -> Result<Keypair> {
-    Ok(Keypair::from_uri(&SecretUri::from_str(str)?)?)
+pub fn parse_secret_phrase(str: &str) -> Result<sr25519::Keypair> {
+    Ok(sr25519::Keypair::from_uri(&SecretUri::from_str(str)?)?)
 }
 
 #[derive(Clone)]
@@ -41,11 +35,11 @@ pub struct SubstrateNetwork {
     pub api: OnlineClient<PolkadotConfig>,
     pub ss58_format: Ss58AddressFormat,
     pub token_decimals: u8,
-    pub keypair: Keypair,
+    pub account_key: sr25519::Keypair,
 }
 
 impl SubstrateNetwork {
-    pub async fn connect(url: String, keypair: Keypair) -> Result<Self> {
+    pub async fn connect(url: String, account_key: sr25519::Keypair) -> Result<Self> {
         let api = OnlineClient::<PolkadotConfig>::from_url(url.clone()).await
             .with_context(|| "Unable to connect to network endpoint:")?;
         let ss58_address_format = api.constants()
@@ -57,11 +51,11 @@ impl SubstrateNetwork {
             .first()
             .map(|token_registry| Token::from(*token_registry).decimals)
             .unwrap_or(12);
-        Ok(Self { url, api, ss58_format: ss58.into(), token_decimals, keypair })
+        Ok(Self { url, api, ss58_format: ss58.into(), token_decimals, account_key })
     }
 
     pub fn account(&self) -> AccountId32 {
-        self.keypair.public_key().0.into()
+        self.account_key.public_key().0.into()
     }
 
     pub async fn call_extrinsic<Call: Payload>(
@@ -69,7 +63,7 @@ impl SubstrateNetwork {
         payload: &Call
     ) -> Result<(H256, ExtrinsicEvents), SubxtError> {
         let tx_in_block = self.api.tx()
-            .sign_and_submit_then_watch_default(payload, &self.keypair).await?
+            .sign_and_submit_then_watch_default(payload, &self.account_key).await?
             .wait_for_finalized().await?;
         let block_hash = tx_in_block.block_hash();
         let events = tx_in_block.wait_for_success().await?;
@@ -164,29 +158,12 @@ pub fn account_to_address(account: AccountId32) -> MultiAddress<SubxtAccountId32
     MultiAddress::Id(core_to_subxt(account))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServiceInfo {
     pub proxy_account: AccountId32,
-    pub network_url: String
-}
-
-// TODO Remove this duplicate
-#[serde_as]
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-pub struct SignedVoteRequest {
-    #[serde_as(as = "Base64")]
-    pub request: Vec<u8>,
-    #[serde_as(as = "Base64")]
-    pub signature: Vec<u8>
-}
-
-impl SignedVoteRequest {
-    pub fn decode(&self) -> Result<Option<(VoteRequest, MultiSignature)>, ScaleError> {
-        let request = VoteRequest::decode(&mut self.request.as_slice())?;
-        let signature = MultiSignature::decode(&mut self.signature.as_slice())?;
-        let valid = signature.verify(self.request.as_slice(), &request.account);
-        Ok(valid.then_some((request, signature)))
-    }
+    pub network_url: String,
+    #[serde(with = "common::serde_over_hex_scale")]
+    pub attestation_bundle: AttestationBundle
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,89 +174,43 @@ pub struct RemoveVoteRequest {
 
 #[cfg(test)]
 mod tests {
-    use base64::Engine;
-    use base64::prelude::BASE64_STANDARD;
     use parity_scale_codec::Encode;
+    use rand::random;
     use serde_json::{json, Value};
-    use sp_core::{Pair, sr25519};
+    use sp_core::{ed25519, Pair};
+    use subxt_signer::sr25519::dev;
 
-    use common::Conviction::{Locked1x, Locked3x, Locked6x};
+    use common::attestation::{Attestation, AttestedData};
 
     use super::*;
 
     #[test]
-    fn signed_vote_request_json_verify() {
-        let (pair, _) = sr25519::Pair::generate();
-
-        let request = VoteRequest::new(pair.public().into(), H256::zero(), 11, true, 100, Locked3x);
-        let encoded_request = request.encode();
-        let signature: MultiSignature = pair.sign(encoded_request.as_slice()).into();
-
-        let signed_request = SignedVoteRequest {
-            request: encoded_request,
-            signature: signature.encode()
+    fn service_info_json() {
+        let service_info = ServiceInfo {
+            proxy_account: dev::alice().public_key().0.into(),
+            network_url: "wss://polkadot.api.onfinality.io/public-ws".to_string(),
+            attestation_bundle: AttestationBundle {
+                attested_data: AttestedData {
+                    genesis_hash: random::<[u8; 32]>().into(),
+                    signing_key: ed25519::Pair::generate().0.public(),
+                },
+                attestation: Attestation::Mock
+            }
         };
 
-        let json = serde_json::to_string(&signed_request).unwrap();
+        let json = serde_json::to_string(&service_info).unwrap();
         println!("{}", json);
 
         assert_eq!(
             serde_json::from_str::<Value>(&json).unwrap(),
             json!({
-                "request": BASE64_STANDARD.encode(&signed_request.request),
-                "signature": BASE64_STANDARD.encode(&signed_request.signature)
+                "proxy_account": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+                "network_url": "wss://polkadot.api.onfinality.io/public-ws",
+                "attestation_bundle": hex::encode(&service_info.attestation_bundle.encode())
             })
         );
 
-        let deserialized_signed_request: SignedVoteRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized_signed_request, signed_request);
-
-        let (decoded_request, decoded_signature) = deserialized_signed_request.decode().unwrap().unwrap();
-        assert_eq!(decoded_request, request);
-        assert_eq!(decoded_signature, signature);
-    }
-
-    #[test]
-    fn different_signer_to_request_account() {
-        let (pair1, _) = sr25519::Pair::generate();
-        let (pair2, _) = sr25519::Pair::generate();
-
-        let request = VoteRequest::new(pair1.public().into(), H256::zero(), 11, true, 100, Locked1x);
-        let encoded_request = request.encode();
-        let signature: MultiSignature = pair2.sign(encoded_request.as_slice()).into();
-
-        let signed_request = SignedVoteRequest {
-            request: encoded_request,
-            signature: signature.encode()
-        };
-
-        let json = serde_json::to_string(&signed_request).unwrap();
-        let deserialized_signed_request: SignedVoteRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized_signed_request, signed_request);
-
-        assert_eq!(deserialized_signed_request.decode().unwrap(), None);
-    }
-
-    #[test]
-    fn modified_request() {
-        let (pair, _) = sr25519::Pair::generate();
-
-        let original_request = VoteRequest::new(pair.public().into(), H256::zero(), 11, true, 100, Locked6x);
-        let signature: MultiSignature = pair.sign(&original_request.encode()).into();
-
-        let signed_request = SignedVoteRequest {
-            request: {
-                let mut modified_request = original_request.clone();
-                modified_request.aye = !original_request.aye;
-                modified_request.encode()
-            },
-            signature: signature.encode()
-        };
-
-        let json = serde_json::to_string(&signed_request).unwrap();
-        let deserialized: SignedVoteRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized, signed_request);
-
-        assert_eq!(deserialized.decode().unwrap(), None);
+        let deserialized_service_info: ServiceInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized_service_info, service_info);
     }
 }

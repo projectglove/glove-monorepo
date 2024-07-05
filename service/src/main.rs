@@ -42,9 +42,9 @@ use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError::P
 use client_interface::metadata::runtime_types::sp_runtime::DispatchError as MetadataDispatchError;
 use client_interface::metadata::storage;
 use client_interface::RemoveVoteRequest;
-use common::{AssignedBalance, attestation, BASE_AYE, Conviction, ExtrinsicLocation, GloveResult, GloveVote, BASE_NAY, SignedGloveResult};
+use common::{AssignedBalance, attestation, BASE_AYE, BASE_NAY, Conviction, ExtrinsicLocation, GloveResult, GloveVote, SignedGloveResult, SignedVoteRequest};
 use common::attestation::{AttestationBundle, AttestationBundleLocation, GloveProof, GloveProofLite};
-use enclave_interface::{EnclaveRequest, EnclaveResponse, SignedVoteRequest};
+use enclave_interface::{EnclaveRequest, EnclaveResponse};
 use RuntimeError::ConvictionVoting;
 use service::{GloveState, Poll};
 use service::enclave::EnclaveHandle;
@@ -196,11 +196,11 @@ async fn initialize_enclave(enclave_mode: EnclaveMode) -> io::Result<EnclaveHand
     }
 }
 
-// TODO Include attestation
 async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
     Json(ServiceInfo {
-        proxy_account: (&context.network).account(),
-        network_url: context.network.url.clone()
+        proxy_account: context.network.account(),
+        network_url: context.network.url.clone(),
+        attestation_bundle: context.attestation_bundle.clone()
     })
 }
 
@@ -209,17 +209,14 @@ async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
 // TODO Reject if voted directly or via another proxy already
 async fn vote(
     State(context): State<Arc<GloveContext>>,
-    Json(payload): Json<client_interface::SignedVoteRequest>
+    Json(signed_request): Json<SignedVoteRequest>
 ) -> Result<(), ServiceError> {
     let network = &context.network;
-    // Receive the signed vote request as a JSON payload represented by `client_interface::SignedVoteRequest`.
-    // Decode it into the `enclave_interface::SignedVoteRequest` version which is better typed and
-    // used by the enclave. In the process we end up verifying the signature, which whilst is not
-    // necessary since the enclave will do it, is a good sanity check.
-    let (request, signature) = payload.decode()?.ok_or(InvalidSignature)?;
-    let signed_request = SignedVoteRequest { request, signature };
     let request = &signed_request.request;
 
+    if !signed_request.verify() {
+        return Err(InvalidSignature);
+    }
     if request.genesis_hash != network.api.genesis_hash() {
         return Err(ChainMismatch);
     }

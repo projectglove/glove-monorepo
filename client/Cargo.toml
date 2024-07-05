@@ -18,3 +18,4 @@ strum.workspace = true
 sp-core.workspace = true
 sp-runtime.workspace = true
 thiserror.workspace = true
+hex.workspace = true

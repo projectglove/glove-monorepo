@@ -5,7 +5,8 @@ use cfg_if::cfg_if;
 use sp_core::{ed25519, H256, Pair};
 
 use common::attestation::{Attestation, AttestationBundle, AttestedData};
-use enclave_interface::{EnclaveRequest, EnclaveResponse, EnclaveStream, Error, SignedVoteRequest};
+use common::SignedVoteRequest;
+use enclave_interface::{EnclaveRequest, EnclaveResponse, EnclaveStream, Error};
 
 // The Glove enclave is a simple process which listens for vote mixing requests.
 #[tokio::main]

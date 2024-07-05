@@ -6,8 +6,7 @@ use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
 use sp_core::H256;
 
-use common::{AssignedBalance, GloveResult, GloveVote};
-use enclave_interface::SignedVoteRequest;
+use common::{AssignedBalance, GloveResult, GloveVote, SignedVoteRequest};
 
 pub fn mix_votes(
     genesis_hash: H256,
@@ -29,7 +28,7 @@ pub fn mix_votes(
         if signed_request.request.poll_index != poll_index {
             return Err(Error::MultiplePolls);
         }
-        if !signed_request.is_signature_valid() {
+        if !signed_request.verify() {
             return Err(Error::InvalidSignature);
         }
         if signed_request.request.genesis_hash != genesis_hash {
