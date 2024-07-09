@@ -1,15 +1,11 @@
 use std::collections::HashMap;
 
 use sp_core::crypto::AccountId32;
-use sp_core::Decode;
-use sp_runtime::MultiAddress;
-use subxt::{Error as SubxtError, OnlineClient, PolkadotConfig};
-use subxt::blocks::ExtrinsicDetails;
-use subxt::error::BlockError;
-use subxt::ext::subxt_core::ext::sp_core::hexdisplay::AsBytesRef;
+use subxt::Error as SubxtError;
 
 use attestation::EnclaveInfo;
 use AttestationBundleLocation::SubstrateRemark;
+use client_interface::{account, ExtrinsicDetails, SubstrateNetwork};
 use client_interface::metadata::runtime_types;
 use client_interface::metadata::runtime_types::frame_system::pallet::Call as SystemCall;
 use client_interface::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
@@ -19,7 +15,7 @@ use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeCall;
 use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeCall::ConvictionVoting;
 use client_interface::metadata::system::calls::types::Remark;
 use client_interface::metadata::utility::calls::types::Batch;
-use common::{AssignedBalance, attestation, BASE_AYE, Conviction, ExtrinsicLocation, GloveResult, GloveVote};
+use common::{AssignedBalance, attestation, BASE_AYE, Conviction, ExtrinsicLocation, GloveResult, VoteDirection};
 use common::attestation::{AttestationBundle, AttestationBundleLocation, GloveProof, GloveProofLite};
 use runtime_types::pallet_conviction_voting::vote::Vote;
 
@@ -41,8 +37,8 @@ impl VerifiedGloveProof {
 
 /// A result of `Ok(None)` means the extrinsic was not a Glove result.
 pub async fn try_verify_glove_result(
-    client: &OnlineClient<PolkadotConfig>,
-    extrinsic: &ExtrinsicDetails<PolkadotConfig, OnlineClient<PolkadotConfig>>,
+    network: &SubstrateNetwork,
+    extrinsic: &ExtrinsicDetails,
     proxy_account: &AccountId32,
     poll_index: u32
 ) -> Result<Option<VerifiedGloveProof>, Error> {
@@ -68,7 +64,7 @@ pub async fn try_verify_glove_result(
     for assigned_balance in &glove_result.assigned_balances {
         account_votes.get(&assigned_balance.account)
             .filter(|&&account_vote| {
-                is_account_vote_consistent(account_vote, glove_result.vote, assigned_balance)
+                is_account_vote_consistent(account_vote, glove_result.direction, assigned_balance)
             })
             .ok_or(Error::InconsistentVotes)?;
     }
@@ -79,10 +75,10 @@ pub async fn try_verify_glove_result(
 
     let attestation_bundle = match glove_proof_lite.attestation_location {
         SubstrateRemark(remark_location) =>
-            get_attestation_bundle_from_remark(client, remark_location).await?
+            get_attestation_bundle_from_remark(network, remark_location).await?
     };
 
-    if attestation_bundle.attested_data.genesis_hash != client.genesis_hash() {
+    if attestation_bundle.attested_data.genesis_hash != network.api.genesis_hash() {
         return Err(Error::ChainMismatch);
     }
 
@@ -104,14 +100,10 @@ pub async fn try_verify_glove_result(
 }
 
 fn parse_glove_proof_lite(
-    extrinsic: &ExtrinsicDetails<PolkadotConfig, OnlineClient<PolkadotConfig>>,
+    extrinsic: &ExtrinsicDetails,
     proxy_account: &AccountId32
 ) -> Result<Option<(GloveProofLite, Batch)>, SubxtError> {
-    let from_proxy = extrinsic
-        .address_bytes()
-        .and_then(parse_multi_address)
-        .filter(|account| account == proxy_account)
-        .is_some();
+    let from_proxy = account(extrinsic).filter(|account| account == proxy_account).is_some();
     if !from_proxy {
         return Ok(None);
     }
@@ -134,17 +126,6 @@ fn parse_glove_proof_lite(
     };
 
     Ok(GloveProofLite::decode_envelope(remark).map(|proof| (proof, batch)).ok())
-}
-
-fn parse_multi_address(bytes: &[u8]) -> Option<AccountId32> {
-    type MultiAddress32 = MultiAddress<AccountId32, u32>;
-
-    MultiAddress32::decode(&mut bytes.as_bytes_ref())
-        .ok()
-        .and_then(|address| match address {
-            MultiAddress::Id(account) => Some(account),
-            _ => None
-        })
 }
 
 fn parse_and_validate_proxy_account_vote(
@@ -171,19 +152,19 @@ fn parse_and_validate_proxy_account_vote(
 
 fn is_account_vote_consistent(
     account_vote: &AccountVote<u128>,
-    glove_vote: GloveVote,
+    direction: VoteDirection,
     assigned_balance: &AssignedBalance
 ) -> bool {
-    match glove_vote {
-        GloveVote::Aye => {
+    match direction {
+        VoteDirection::Aye => {
             parse_standard_account_vote(account_vote) ==
                 Some((true, assigned_balance.balance, assigned_balance.conviction))
         },
-        GloveVote::Nay => {
+        VoteDirection::Nay => {
             parse_standard_account_vote(account_vote) ==
                 Some((false, assigned_balance.balance, assigned_balance.conviction))
         },
-        GloveVote::Abstain => {
+        VoteDirection::Abstain => {
             parse_abstain_account_vote(account_vote) == Some(assigned_balance.balance)
         }
     }
@@ -221,22 +202,14 @@ fn parse_abstain_account_vote(account_vote: &AccountVote<u128>) -> Option<u128> 
 }
 
 async fn get_attestation_bundle_from_remark(
-    client: &OnlineClient<PolkadotConfig>,
-    extrinsic_location: ExtrinsicLocation
+    network: &SubstrateNetwork,
+    remark_location: ExtrinsicLocation
 ) -> Result<AttestationBundle, Error> {
-    let block_result = client.blocks().at(extrinsic_location.block_hash).await;
-    if let Err(SubxtError::Block(BlockError::NotFound(_))) = block_result {
-        return Err(Error::ExtrinsicNotFound(extrinsic_location));
-    }
-    block_result?
-        .extrinsics().await?
-        .iter()
-        .nth(extrinsic_location.block_index as usize)
-        .transpose()?
-        .ok_or_else(|| Error::ExtrinsicNotFound(extrinsic_location))?
+    network.get_extrinsic(remark_location).await?
+        .ok_or_else(|| Error::ExtrinsicNotFound(remark_location))?
         .as_extrinsic::<Remark>()?
         .ok_or_else(|| Error::InvalidAttestationBundle(
-            format!("Extrinsic at location {:?} is not a Remark", extrinsic_location)
+            format!("Extrinsic at location {:?} is not a Remark", remark_location)
         ))
         .and_then(|remark| {
             AttestationBundle::decode_envelope(&remark.remark).map_err(|scale_error| {

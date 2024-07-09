@@ -14,14 +14,14 @@ use subxt::Error::Runtime;
 use subxt_signer::sr25519::Keypair;
 
 use client::{Error, try_verify_glove_result};
-use client_interface::{account_to_address, is_glove_member};
+use client_interface::{account_to_subxt_multi_address, is_glove_member};
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::Duplicate;
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::NotFound;
 use client_interface::metadata::runtime_types::polkadot_runtime::{ProxyType, RuntimeError};
 use client_interface::RemoveVoteRequest;
 use client_interface::ServiceInfo;
 use client_interface::SubstrateNetwork;
-use common::{attestation, Conviction, GloveVote, SignedVoteRequest, VoteRequest};
+use common::{attestation, Conviction, VoteDirection, SignedVoteRequest, VoteRequest};
 use common::attestation::{Attestation, EnclaveInfo};
 use RuntimeError::Proxy;
 
@@ -67,7 +67,7 @@ async fn join_glove(service_info: &ServiceInfo, network: &SubstrateNetwork) -> R
     }
     let add_proxy_call = client_interface::metadata::tx()
         .proxy()
-        .add_proxy(account_to_address(service_info.proxy_account.clone()), ProxyType::Governance, 0)
+        .add_proxy(account_to_subxt_multi_address(service_info.proxy_account.clone()), ProxyType::Governance, 0)
         .unvalidated();
     match network.call_extrinsic(&add_proxy_call).await {
         Ok(_) => Ok(SuccessOutput::JoinedGlove),
@@ -129,46 +129,42 @@ async fn listen_for_glove_votes(
     nonce: u32,
     proxy_account: &AccountId32
 ) -> Result<()> {
-    let mut blocks_sub = network.api.blocks().subscribe_finalized().await?;
-
-    while let Some(block) = blocks_sub.next().await {
-        for extrinsic in block?.extrinsics().await?.iter() {
-            let verification_result = try_verify_glove_result(
-                &network.api,
-                &extrinsic?,
-                proxy_account,
-                vote_cmd.poll_index,
-            ).await;
-            let verified_glove_proof = match verification_result {
-                Ok(None) => continue, // Not what we're looking for
-                Ok(Some(verified_glove_proof)) => verified_glove_proof,
-                Err(Error::Subxt(subxt_error)) => return Err(subxt_error.into()),
-                Err(error) => {
-                    eprintln!("Error verifying Glove proof: {}", error);
-                    continue;
-                }
-            };
-            if let Some(balance) = verified_glove_proof.get_vote_balance(&network.account(), nonce) {
-                let balance = BigDecimal::new(
-                    balance.into(),
-                    network.token_decimals as i64
-                ).with_scale_round(3, RoundingMode::HalfEven);
-                match verified_glove_proof.result.vote {
-                    GloveVote::Aye => println!("Glove vote aye with balance {}", balance),
-                    GloveVote::Nay => println!("Glove vote nay with balance {}", balance),
-                    GloveVote::Abstain => println!("Glove abstained with balance {}", balance),
-                }
-                if let Some(_) = &verified_glove_proof.enclave_info {
-                    // TODO Check measurement
-                } else {
-                    eprintln!("WARNING: Secure enclave wasn't used");
-                }
-            } else {
-                eprintln!("WARNING: Received Glove proof for poll, but vote was not included");
+    network.subscribe_successful_extrinsics(|extrinsic, _| async move {
+        let verification_result = try_verify_glove_result(
+            &network,
+            &extrinsic,
+            proxy_account,
+            vote_cmd.poll_index,
+        ).await;
+        let verified_glove_proof = match verification_result {
+            Ok(None) => return Ok(()), // Not what we're looking for
+            Ok(Some(verified_glove_proof)) => verified_glove_proof,
+            Err(Error::Subxt(subxt_error)) => return Err(subxt_error.into()),
+            Err(error) => {
+                eprintln!("Error verifying Glove proof: {}", error);
+                return Ok(());
             }
+        };
+        if let Some(balance) = verified_glove_proof.get_vote_balance(&network.account(), nonce) {
+            let balance = BigDecimal::new(
+                balance.into(),
+                network.token_decimals as i64
+            ).with_scale_round(3, RoundingMode::HalfEven);
+            match verified_glove_proof.result.direction {
+                VoteDirection::Aye => println!("Glove vote aye with balance {}", balance),
+                VoteDirection::Nay => println!("Glove vote nay with balance {}", balance),
+                VoteDirection::Abstain => println!("Glove abstained with balance {}", balance),
+            }
+            if let Some(_) = &verified_glove_proof.enclave_info {
+                // TODO Check measurement
+            } else {
+                eprintln!("WARNING: Secure enclave wasn't used");
+            }
+        } else {
+            eprintln!("WARNING: Received Glove proof for poll, but vote was not included");
         }
-    }
-
+        Ok(())
+    }).await?;
     Ok(())
 }
 
@@ -200,7 +196,7 @@ async fn leave_glove(service_info: &ServiceInfo, network: &SubstrateNetwork) -> 
     }
     let add_proxy_call = client_interface::metadata::tx()
         .proxy()
-        .remove_proxy(account_to_address(service_info.proxy_account.clone()), ProxyType::Governance, 0)
+        .remove_proxy(account_to_subxt_multi_address(service_info.proxy_account.clone()), ProxyType::Governance, 0)
         .unvalidated();
     match network.call_extrinsic(&add_proxy_call).await {
         Ok(_) => Ok(SuccessOutput::LeftGlove),

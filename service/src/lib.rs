@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use itertools::Itertools;
 use sp_runtime::AccountId32;
@@ -11,13 +11,14 @@ use common::attestation::AttestationBundleLocation;
 use common::SignedVoteRequest;
 
 pub mod enclave;
+pub mod subscan;
 
 #[derive(Default)]
 pub struct GloveState {
     // There may be a non-trivial cost to storing the attestation bundle location, and so it's done
     // lazily on first poll mixing, rather than eagerly on startup.
     abl: Mutex<Option<AttestationBundleLocation>>,
-    polls: Mutex<HashMap<u32, Poll>>
+    polls: RwLock<HashMap<u32, Poll>>,
 }
 
 impl GloveState {
@@ -39,8 +40,8 @@ impl GloveState {
         }
     }
 
-    pub async fn get_poll(&self, poll_index: u32) -> Poll {
-        let mut polls = self.polls.lock().await;
+    pub fn get_poll(&self, poll_index: u32) -> Poll {
+        let mut polls = self.polls.write().unwrap();
         polls
             .entry(poll_index)
             .or_insert_with(|| Poll {
@@ -50,17 +51,22 @@ impl GloveState {
             .clone()
     }
 
-    pub async fn get_optional_poll(&self, poll_index: u32) -> Option<Poll> {
-        let polls = self.polls.lock().await;
+    pub fn get_optional_poll(&self, poll_index: u32) -> Option<Poll> {
+        let polls = self.polls.read().unwrap();
         polls.get(&poll_index).map(Poll::clone)
     }
 
-    pub async fn remove_poll(&self, poll_index: u32) {
-        let mut polls = self.polls.lock().await;
+    pub fn remove_poll(&self, poll_index: u32) {
+        let mut polls = self.polls.write().unwrap();
         polls.remove(&poll_index);
+    }
+
+    pub fn get_polls(&self) -> Vec<Poll> {
+        self.polls.read().unwrap().values().cloned().collect()
     }
 }
 
+/// Representing a poll which the Glove proxy will participate in.
 #[derive(Debug, Clone)]
 pub struct Poll {
     pub index: u32,
@@ -80,9 +86,9 @@ impl Poll {
         initiate_mix
     }
 
-    pub async fn remove_vote_request(&self, account: AccountId32) -> Option<bool> {
+    pub async fn remove_vote_request(&self, account: &AccountId32) -> Option<bool> {
         let mut poll = self.inner.lock().await;
-        let _ = poll.requests.remove(&account)?;
+        let _ = poll.requests.remove(account)?;
         let initiate_mix = !poll.pending_mix;
         poll.pending_mix = true;
         Some(initiate_mix)
@@ -94,13 +100,12 @@ impl Poll {
             return None;
         }
         poll.pending_mix = false;
-        Some(
-            poll.requests
-                .clone()
-                .into_values()
-                .sorted_by(|a, b| Ord::cmp(&a.request.account, &b.request.account))
-                .collect()
-        )
+        let sorted_requests = poll.requests
+            .clone()
+            .into_values()
+            .sorted_by(|a, b| Ord::cmp(&a.request.account, &b.request.account))
+            .collect();
+        Some(sorted_requests)
     }
 }
 
@@ -130,14 +135,14 @@ mod tests {
         let account = AccountId32::from([1; 32]);
         let vote_request = signed_vote_request(account.clone(), 1, true, 10);
 
-        let poll = glove_state.get_poll(1).await;
+        let poll = glove_state.get_poll(1);
 
         let pending_mix = poll.add_vote_request(vote_request.clone()).await;
         assert_eq!(pending_mix, true);
         let vote_requeats = poll.begin_mix().await;
         assert_eq!(vote_requeats, Some(vec![vote_request]));
 
-        let pending_mix = poll.remove_vote_request(account).await;
+        let pending_mix = poll.remove_vote_request(&account).await;
         assert_eq!(pending_mix, Some(true));
         let vote_requeats = poll.begin_mix().await;
         assert_eq!(vote_requeats, Some(vec![]));
@@ -148,8 +153,8 @@ mod tests {
     async fn remove_from_non_existent_poll() {
         let glove_state = GloveState::default();
         let account = AccountId32::from([1; 32]);
-        let poll = glove_state.get_poll(1).await;
-        let pending_mix = poll.remove_vote_request(account).await;
+        let poll = glove_state.get_poll(1);
+        let pending_mix = poll.remove_vote_request(&account).await;
         assert_eq!(pending_mix, None);
     }
 
@@ -160,10 +165,10 @@ mod tests {
         let account_2 = AccountId32::from([2; 32]);
         let vote_request = signed_vote_request(account_1.clone(), 1, true, 10);
 
-        let poll = glove_state.get_poll(1).await;
+        let poll = glove_state.get_poll(1);
         poll.add_vote_request(vote_request.clone()).await;
 
-        let pending_mix = poll.remove_vote_request(account_2).await;
+        let pending_mix = poll.remove_vote_request(&account_2).await;
         assert_eq!(pending_mix, None);
     }
 
@@ -174,7 +179,7 @@ mod tests {
         let vote_request_1 = signed_vote_request(account.clone(), 1, true, 10);
         let vote_request_2 = signed_vote_request(account.clone(), 1, true, 20);
 
-        let poll = glove_state.get_poll(1).await;
+        let poll = glove_state.get_poll(1);
 
         let pending_mix = poll.add_vote_request(vote_request_1.clone()).await;
         assert_eq!(pending_mix, true);
@@ -193,7 +198,7 @@ mod tests {
         let vote_request_1 = signed_vote_request(account_1.clone(), 1, true, 10);
         let vote_request_2 = signed_vote_request(account_2.clone(), 1, false, 20);
 
-        let poll = glove_state.get_poll(1).await;
+        let poll = glove_state.get_poll(1);
 
         let pending_mix = poll.add_vote_request(vote_request_2.clone()).await;
         assert_eq!(pending_mix, true);

@@ -923,11 +923,13 @@ dependencies = [
  "serde",
  "serde_json",
  "sp-core 33.0.1",
+ "sp-runtime 37.0.0",
  "ss58-registry",
  "subxt",
  "subxt-core",
  "subxt-signer",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -4267,6 +4269,9 @@ dependencies = [
  "itertools 0.13.0",
  "nix 0.27.1",
  "parity-scale-codec",
+ "reqwest",
+ "serde",
+ "serde_with",
  "sp-runtime 37.0.0",
  "subxt",
  "subxt-signer",
