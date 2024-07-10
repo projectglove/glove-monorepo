@@ -51,7 +51,6 @@ async fn main() -> anyhow::Result<()> {
     // break the loop and terminate the enclave as well.
     loop {
         let request = stream.read::<EnclaveRequest>().await?;
-        println!("Request: {:?}", request);
         let response = match request {
             EnclaveRequest::MixVotes(vote_requests) =>
                 process_mix_votes(&vote_requests, &signing_pair, genesis_hash),
@@ -123,7 +122,10 @@ fn process_mix_votes(
     signing_key: &ed25519::Pair,
     genesis_hash: H256
 ) -> EnclaveResponse {
-    println!("Received request: {:?}", vote_requests);
+    println!("Received mix votes request:");
+    for vote_request in vote_requests {
+        println!("  {:?}", vote_request);
+    }
     match enclave::mix_votes(genesis_hash, &vote_requests) {
         Ok(glove_result) => EnclaveResponse::GloveResult(glove_result.sign(signing_key)),
         Err(error) => EnclaveResponse::Error(Error::Mixing(error.to_string()))

@@ -10,7 +10,6 @@ use axum::Router;
 use axum::routing::{get, post};
 use cfg_if::cfg_if;
 use clap::{Parser, ValueEnum};
-use parity_scale_codec::Error as ScaleError;
 use sp_runtime::AccountId32;
 use subxt::Error as SubxtError;
 use subxt_signer::sr25519::Keypair;
@@ -23,11 +22,9 @@ use tracing::log::warn;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
 use attestation::Error::InsecureMode;
-use client_interface::{ExtrinsicEvents, is_glove_member, ServiceInfo, SubstrateNetwork};
-use client_interface::account_to_address;
+use client_interface::{account, is_glove_member, ProxyError, ServiceInfo, SubstrateNetwork};
+use client_interface::account_to_subxt_multi_address;
 use client_interface::BatchError;
-use client_interface::core_to_subxt;
-use client_interface::metadata::proxy::events::ProxyExecuted;
 use client_interface::metadata::runtime_types::frame_system::pallet::Call as SystemCall;
 use client_interface::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
 use client_interface::metadata::runtime_types::pallet_conviction_voting::pallet::Error::{InsufficientFunds, NotOngoing, NotVoter};
@@ -35,24 +32,20 @@ use client_interface::metadata::runtime_types::pallet_conviction_voting::vote::A
 use client_interface::metadata::runtime_types::pallet_conviction_voting::vote::Vote;
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Call as ProxyCall;
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::NotProxy;
-use client_interface::metadata::runtime_types::pallet_referenda::types::ReferendumInfo;
 use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeCall;
 use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError;
 use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError::Proxy;
-use client_interface::metadata::runtime_types::sp_runtime::DispatchError as MetadataDispatchError;
-use client_interface::metadata::storage;
 use client_interface::RemoveVoteRequest;
-use common::{AssignedBalance, attestation, BASE_AYE, BASE_NAY, Conviction, ExtrinsicLocation, GloveResult, GloveVote, SignedGloveResult, SignedVoteRequest};
+use common::{AssignedBalance, attestation, BASE_AYE, BASE_NAY, Conviction, GloveResult, SignedGloveResult, SignedVoteRequest, VoteDirection};
 use common::attestation::{AttestationBundle, AttestationBundleLocation, GloveProof, GloveProofLite};
 use enclave_interface::{EnclaveRequest, EnclaveResponse};
 use RuntimeError::ConvictionVoting;
-use service::{GloveState, Poll};
+use service::{GloveState, Poll, subscan};
 use service::enclave::EnclaveHandle;
-use ServiceError::{NotMember, PollNotOngoing, Scale};
+use ServiceError::{NotMember, PollNotOngoing};
+use ServiceError::ChainMismatch;
 use ServiceError::InsufficientBalance;
 use ServiceError::InvalidSignature;
-
-use crate::ServiceError::ChainMismatch;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Glove proxy service")]
@@ -86,33 +79,22 @@ enum EnclaveMode {
     Mock
 }
 
-// TODO Listen, or poll, for any member who votes directly.
-// TODO  And only execute on-chain vote batch without them if the service has submitted on-chain already
 // TODO Test what an actual limit is on batched votes
 // TODO Load test with ~100 accounts voting on a single poll
 // TODO Sign the enclave image
 // TODO Persist voting requests
 // TODO Restoring state on startup from private store and on-chain
 // TODO When does the mixing occur? Is it configurable?
-// TODO Remove on-chain votes due to error conditions detected by the proxy
 
 // TODO Deal with RPC disconnect:
-// 2024-06-19T11:36:12.533696Z DEBUG rustls::common_state: Sending warning alert CloseNotify
-// 2024-06-19T11:36:12.533732Z DEBUG soketto::connection: 2d71fa53: cannot receive, connection is closed
-// 2024-06-19T11:36:12.533743Z DEBUG jsonrpsee-client: Failed to read message: connection closed
-// 2024-06-19T11:41:41.247725Z DEBUG request{method=GET uri=/info version=HTTP/1.1}: tower_http::trace::on_request: started processing request
-// 2024-06-19T11:41:41.247763Z DEBUG request{method=GET uri=/info version=HTTP/1.1}: tower_http::trace::on_response: finished processing request latency=0 ms status=200
-// 2024-06-19T11:41:42.195777Z DEBUG request{method=POST uri=/vote version=HTTP/1.1}: tower_http::trace::on_request: started processing request
-// 2024-06-19T11:41:42.195924Z  WARN request{method=POST uri=/vote version=HTTP/1.1}: service: Subxt(Rpc(ClientError(RestartNeeded(Transport(connection closed
-//
-// Caused by:
-// connection closed)))))
-// 2024-06-19T11:41:42.195944Z DEBUG request{method=POST uri=/vote version=HTTP/1.1}: tower_http::trace::on_response: finished processing request latency=0 ms status=500
-// 2024-06-19T11:41:42.195957Z ERROR request{method=POST uri=/vote version=HTTP/1.1}: tower_http::trace::on_failure: response failed classification=Status code: 500 Internal Server Error latency=0 ms
+//  2024-06-19T11:41:42.195924Z  WARN request{method=POST uri=/vote version=HTTP/1.1}: service: Subxt(Rpc(ClientError(RestartNeeded(Transport(connection closed
+//  Caused by:
+//  connection closed)))))
+
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let filter = EnvFilter::try_new("subxt_core::events=info")?
+    let filter = EnvFilter::try_new("subxt_core::events=info,hyper_util=info,reqwest::connect=info")?
         // Set the base level to debug
         .add_directive(LevelFilter::DEBUG.into());
     tracing_subscriber::fmt()
@@ -124,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
     let enclave_handle = initialize_enclave(args.enclave_mode).await?;
 
     let network = SubstrateNetwork::connect(args.network_url, args.proxy_secret_phrase).await?;
-    info!("Connected to Substrate network: {}", network.url);
+    info!("Connected: {:?}", network);
 
     let attestation_bundle = enclave_handle.send_receive::<AttestationBundle>(
         &network.api.genesis_hash()
@@ -143,6 +125,8 @@ async fn main() -> anyhow::Result<()> {
         state: GloveState::default()
     });
 
+    start_background_checker(glove_context.clone());
+
     let router = Router::new()
         .route("/info", get(info))
         .route("/vote", post(vote))
@@ -155,11 +139,17 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-struct GloveContext {
-    enclave_handle: EnclaveHandle,
-    attestation_bundle: AttestationBundle,
-    network: SubstrateNetwork,
-    state: GloveState
+/// Start a background task which polls for Glove violators and removes them.
+fn start_background_checker(context: Arc<GloveContext>) {
+    spawn(async move {
+        loop {
+            debug!("Checking for Glove violators...");
+            if let Err(error) = context.remove_glove_violators().await {
+                warn!("Error when checking for Glove violators: {:?}", error)
+            }
+            sleep(Duration::from_secs(60)).await
+        }
+    });
 }
 
 async fn initialize_enclave(enclave_mode: EnclaveMode) -> io::Result<EnclaveHandle> {
@@ -223,17 +213,17 @@ async fn vote(
     if !is_glove_member(network, request.account.clone(), network.account()).await? {
         return Err(NotMember);
     }
-    if !is_poll_ongoing(network, request.poll_index).await? {
+    if network.get_ongoing_poll(request.poll_index).await?.is_none() {
         return Err(PollNotOngoing);
     }
     // In a normal poll with multiple votes on both sides, the on-chain vote balance can be
     // significantly less than the vote request balance. A malicious actor could use this to scew
     // the poll by passing a balance value much higher than they have, knowing there's a good chance
     // it won't be fully utilised.
-    if account_balance(network, request.account.clone()).await? < request.balance {
+    if network.account_balance(request.account.clone()).await? < request.balance {
         return Err(InsufficientBalance);
     }
-    let poll = context.state.get_poll(request.poll_index).await;
+    let poll = context.state.get_poll(request.poll_index);
     let initiate_mix = poll.add_vote_request(signed_request).await;
     if initiate_mix {
         schedule_vote_mixing(context, poll);
@@ -246,15 +236,16 @@ async fn remove_vote(
     Json(payload): Json<RemoveVoteRequest>
 ) -> Result<(), ServiceError> {
     let network = &context.network;
-    // TODO Does it matter if they're no longer a member? Can we remove the vote regardless?
-    if !is_glove_member(network, payload.account.clone(), network.account()).await? {
+    let account = &payload.account;
+    if !is_glove_member(network, account.clone(), network.account()).await? {
         return Err(NotMember);
     }
-    // Removing a non-existent vote request is a no-op
-    let Some(poll) = context.state.get_optional_poll(payload.poll_index).await else {
+    let Some(poll) = context.state.get_optional_poll(payload.poll_index) else {
+        // Removing a non-existent vote request is a no-op
         return Ok(());
     };
-    let Some(initiate_mix) = poll.remove_vote_request(payload.account.clone()).await else {
+    let Some(initiate_mix) = poll.remove_vote_request(&account).await else {
+        // Another task has already started mixing the votes
         return Ok(());
     };
 
@@ -273,26 +264,6 @@ async fn remove_vote(
     }
 
     Ok(())
-}
-
-async fn is_poll_ongoing(network: &SubstrateNetwork, poll_index: u32) -> Result<bool, SubxtError> {
-    Ok(
-        network.api
-            .storage()
-            .at_latest().await?
-            .fetch(&storage().referenda().referendum_info_for(poll_index).unvalidated()).await?
-            .map_or(false, |info| matches!(info, ReferendumInfo::Ongoing(_)))
-    )
-}
-
-async fn account_balance(network: &SubstrateNetwork, account: AccountId32) -> Result<u128, SubxtError> {
-    Ok(
-        network.api
-            .storage()
-            .at_latest().await?
-            .fetch(&storage().system().account(core_to_subxt(account))).await?
-            .map_or(0, |account| account.data.free)
-    )
 }
 
 /// Schedule a background task to mix the votes and submit them on-chain after a delay. Any voting
@@ -327,7 +298,7 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, Mixi
         return Ok(true);
     };
 
-    let signed_glove_result = mix_votes_in_enclave(&context, &poll_requests).await?;
+    let signed_glove_result = mix_votes_in_enclave(&context, poll_requests.clone()).await?;
 
     let result = submit_glove_result_on_chain(&context, &poll_requests, signed_glove_result).await;
     if result.is_ok() {
@@ -337,23 +308,22 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, Mixi
 
     match result.unwrap_err() {
         ProxyError::Module(_, ConvictionVoting(NotOngoing)) => {
-            info!("Poll {} has been detected as no longer ongoing, and so removing it", poll.index);
-            context.state.remove_poll(poll.index).await;
+            // The background thread will eventually remove the poll
+            info!("Poll {} is no longer ongoing, and will be removed", poll.index);
             Ok(true)
         }
         ProxyError::Module(batch_index, ConvictionVoting(InsufficientFunds)) => {
             let request = &poll_requests[batch_index].request;
             warn!("Insufficient funds for {:?}. Removing it from poll and trying again", request);
             // TODO On-chain vote needs to be removed as well
-            poll.remove_vote_request(request.account.clone()).await;
+            poll.remove_vote_request(&request.account).await;
             Ok(false)
         }
         ProxyError::Batch(BatchError::Module(batch_index, Proxy(NotProxy))) => {
             let request = &poll_requests[batch_index].request;
-            warn!("Account is no longer part of the proxy, removing it from poll and trying again: {:?}",
+            warn!("Account is no longer part of Glove, removing it from poll and trying again: {:?}",
                 request);
-            // TODO How to remove on-chain vote if the account is no longer part of the proxy?
-            poll.remove_vote_request(request.account.clone()).await;
+            poll.remove_vote_request(&request.account).await;
             Ok(false)
         }
         proxy_error => {
@@ -370,13 +340,18 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, Mixi
 
 async fn mix_votes_in_enclave(
     context: &GloveContext,
-    vote_requests: &Vec<SignedVoteRequest>
+    vote_requests: Vec<SignedVoteRequest>
 ) -> Result<SignedGloveResult, MixingError> {
-    let request = EnclaveRequest::MixVotes(vote_requests.clone());
-    let response = context.enclave_handle.send_receive(&request).await?;
-    debug!("Mixing result from enclave: {:?}", response);
+    let request = EnclaveRequest::MixVotes(vote_requests);
+    let response = context.enclave_handle.send_receive::<EnclaveResponse>(&request).await?;
     match response {
         EnclaveResponse::GloveResult(signed_result) => {
+            let result = &signed_result.result;
+            debug!("Glove result from enclave, poll: {}, direction: {:?}, signature: {:?}",
+                result.poll_index, result.direction, signed_result.signature);
+            for assigned_balance in &result.assigned_balances {
+                debug!("  {:?}", assigned_balance);
+            }
             // Double-check things all line up before committing on-chain
             match GloveProof::verify_components(&signed_result, &context.attestation_bundle) {
                 Ok(_) => debug!("Glove proof verified"),
@@ -385,7 +360,10 @@ async fn mix_votes_in_enclave(
             }
             Ok(signed_result)
         }
-        EnclaveResponse::Error(enclave_error) => Err(enclave_error.into()),
+        EnclaveResponse::Error(enclave_error) => {
+            warn!("Mixing error from enclave: {:?}", enclave_error);
+            Err(enclave_error.into())
+        },
     }
 }
 
@@ -428,24 +406,27 @@ async fn submit_glove_result_on_chain(
     // the same extrinsic in the batch - there's no way of knowing which of them failed. The
     // `ItemCompleted` events can't be issued, since they're rolled back in light of the error.
     let events = context.network.batch(batched_calls).await?;
-    confirm_proxy_executed(&context.network, &events)
+    context.network.confirm_proxy_executed(&events)
 }
 
 // TODO Deal with mixed_balance of zero
 fn to_proxied_vote_call(result: &GloveResult, assigned_balance: &AssignedBalance) -> RuntimeCall {
     RuntimeCall::Proxy(
         ProxyCall::proxy {
-            real: account_to_address(assigned_balance.account.clone()),
+            real: account_to_subxt_multi_address(assigned_balance.account.clone()),
             force_proxy_type: None,
             call: Box::new(RuntimeCall::ConvictionVoting(ConvictionVotingCall::vote {
                 poll_index: result.poll_index,
-                vote: to_account_vote(result.vote, assigned_balance)
+                vote: to_account_vote(result.direction, assigned_balance)
             })),
         }
     )
 }
 
-fn to_account_vote(glove_vote: GloveVote, assigned_balance: &AssignedBalance) -> AccountVote<u128> {
+fn to_account_vote(
+    direction: VoteDirection,
+    assigned_balance: &AssignedBalance
+) -> AccountVote<u128> {
     let offset = match assigned_balance.conviction {
         Conviction::None => 0,
         Conviction::Locked1x => 1,
@@ -456,26 +437,20 @@ fn to_account_vote(glove_vote: GloveVote, assigned_balance: &AssignedBalance) ->
         Conviction::Locked6x => 6
     };
     let balance = assigned_balance.balance;
-    match glove_vote {
-        GloveVote::Aye => AccountVote::Standard { vote: Vote(BASE_AYE + offset), balance },
-        GloveVote::Nay => AccountVote::Standard { vote: Vote(BASE_NAY + offset), balance },
-        GloveVote::Abstain => AccountVote::SplitAbstain { aye: 0, nay: 0, abstain: balance }
+    match direction {
+        VoteDirection::Aye => AccountVote::Standard { vote: Vote(BASE_AYE + offset), balance },
+        VoteDirection::Nay => AccountVote::Standard { vote: Vote(BASE_NAY + offset), balance },
+        VoteDirection::Abstain => AccountVote::SplitAbstain { aye: 0, nay: 0, abstain: balance }
     }
 }
 
 async fn submit_attestation_bundle_location_on_chain(
     context: &GloveContext
 ) -> Result<AttestationBundleLocation, SubxtError> {
-    let compressed = context.attestation_bundle.encode_envelope();
-    let payload = client_interface::metadata::tx().system().remark(compressed);
+    let encoded = context.attestation_bundle.encode_envelope();
     let result = context.network
-        .call_extrinsic(&payload).await
-        .map(|(block_hash, events)| {
-            AttestationBundleLocation::SubstrateRemark(ExtrinsicLocation {
-                block_hash,
-                block_index: events.extrinsic_index(),
-            })
-        });
+        .call_extrinsic(&client_interface::metadata::tx().system().remark(encoded)).await
+        .map(|(_, location)| AttestationBundleLocation::SubstrateRemark(location));
     info!("Stored attestation bundle: {:?}", result);
     result
 }
@@ -489,7 +464,7 @@ async fn proxy_remove_vote(
     // error handling.
     let events = network.batch(vec![RuntimeCall::Proxy(
         ProxyCall::proxy {
-            real: account_to_address(account),
+            real: account_to_subxt_multi_address(account),
             force_proxy_type: None,
             call: Box::new(RuntimeCall::ConvictionVoting(ConvictionVotingCall::remove_vote {
                 class: None,
@@ -497,29 +472,64 @@ async fn proxy_remove_vote(
             })),
         }
     )]).await?;
-    confirm_proxy_executed(network, &events)
+    network.confirm_proxy_executed(&events)
 }
 
-fn confirm_proxy_executed(
-    network: &SubstrateNetwork,
-    events: &ExtrinsicEvents
-) -> Result<(), ProxyError> {
-    // Find the first proxy call which failed, if any
-    for (batch_index, proxy_executed) in events.find::<ProxyExecuted>().enumerate() {
-        match proxy_executed {
-            Ok(ProxyExecuted { result: Ok(_) }) => continue,
-            Ok(ProxyExecuted { result: Err(dispatch_error) }) => {
-                return network
-                    .extract_runtime_error(&dispatch_error)
-                    .map_or_else(
-                        || Err(ProxyError::Dispatch(batch_index, dispatch_error)),
-                        |runtime_error| Err(ProxyError::Module(batch_index, runtime_error))
-                    )
-            },
-            Err(subxt_error) => return Err(subxt_error.into())
+struct GloveContext {
+    enclave_handle: EnclaveHandle,
+    attestation_bundle: AttestationBundle,
+    network: SubstrateNetwork,
+    state: GloveState
+}
+
+impl GloveContext {
+    /// Check for voters who have voted outside of Glove and remove them.
+    async fn remove_glove_violators(&self) -> anyhow::Result<()> {
+        let mut polls_need_mixing = Vec::new();
+
+        for poll in self.state.get_polls() {
+            // Use this opportunity to do some garbage collection and remove any expired polls
+            if self.network.get_ongoing_poll(poll.index).await?.is_none() {
+                self.state.remove_poll(poll.index);
+                continue;
+            }
+            for non_glove_voter in self.non_glove_voters(poll.index).await? {
+                // Remove the voter from the poll if they have submitted a Glove vote
+                let initiate_mix = match poll.remove_vote_request(&non_glove_voter).await {
+                    Some(initiate_mix) => {
+                        info!("Account {} has voted on poll {} outside of Glove and so removing them",
+                            non_glove_voter, poll.index);
+                        initiate_mix
+                    },
+                    None => false
+                };
+                if initiate_mix {
+                    polls_need_mixing.push(poll.clone());
+                }
+            }
         }
+
+        // TODO Should only be mixed if there are on-chain votes to replace
+        for poll in polls_need_mixing {
+            mix_votes(self, &poll).await;
+        }
+
+        Ok(())
     }
-    Ok(())
+
+    async fn non_glove_voters(&self, poll_index: u32) -> anyhow::Result<Vec<AccountId32>> {
+        let mut voters = Vec::new();
+        for vote in subscan::get_votes(&self.network, poll_index).await? {
+            let extrinsic_account = self.network.get_extrinsic(vote.extrinsic_index).await?
+                .as_ref()
+                .and_then(account);
+            if extrinsic_account != Some(self.network.account()) {
+                // The vote wasn't cast by the Glove proxy
+                voters.push(vote.account.address);
+            }
+        }
+        Ok(voters)
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -530,31 +540,6 @@ pub enum MixingError {
     Enclave(#[from] enclave_interface::Error),
     #[error("Enclave attestation error: {0}")]
     Attestation(#[from] attestation::Error)
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum ProxyError {
-    #[error("Module error from batch index {0}: {1:?}")]
-    Module(usize, RuntimeError),
-    #[error("Dispatch error from batch index {0}: {1:?}")]
-    Dispatch(usize, MetadataDispatchError),
-    #[error("Batch error: {0}")]
-    Batch(#[from] BatchError),
-    #[error("Internal Subxt error: {0}")]
-    Subxt(#[from] SubxtError)
-}
-
-impl ProxyError {
-    fn batch_index(&self) -> Option<usize> {
-        match self {
-            ProxyError::Module(batch_index, _) => Some(*batch_index),
-            ProxyError::Dispatch(batch_index, _) => Some(*batch_index),
-            ProxyError::Batch(BatchError::Module(batch_index, _)) => Some(*batch_index),
-            ProxyError::Batch(BatchError::Dispatch(batch_interrupted)) =>
-                Some(batch_interrupted.index as usize),
-            _ => None
-        }
-    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -569,8 +554,6 @@ enum ServiceError {
     PollNotOngoing,
     #[error("Insufficient account balance for vote")]
     InsufficientBalance,
-    #[error("Scale decoding error: {0}")]
-    Scale(#[from] ScaleError),
     #[error("Proxy error: {0}")]
     Proxy(#[from] ProxyError),
     #[error("Internal Subxt error: {0}")]
@@ -584,7 +567,6 @@ impl IntoResponse for ServiceError {
             NotMember => (StatusCode::BAD_REQUEST, self.to_string()),
             PollNotOngoing => (StatusCode::BAD_REQUEST, self.to_string()),
             InsufficientBalance => (StatusCode::BAD_REQUEST, self.to_string()),
-            Scale(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             _ => {
                 warn!("{:?}", self);
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())

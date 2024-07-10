@@ -22,6 +22,9 @@ tracing.workspace = true
 parity-scale-codec.workspace = true
 tempfile.workspace = true
 cfg-if.workspace = true
+serde.workspace = true
+serde_with.workspace = true
+reqwest.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-vsock.workspace = true

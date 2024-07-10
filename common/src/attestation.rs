@@ -167,7 +167,7 @@ mod tests {
 
     use Attestation::Nitro;
 
-    use crate::{AssignedBalance, Conviction, GloveResult, GloveVote, nitro};
+    use crate::{AssignedBalance, Conviction, GloveResult, nitro, VoteDirection};
     use crate::attestation::Attestation::Mock;
 
     use super::*;
@@ -199,24 +199,24 @@ mod tests {
             glove_proof_lite.signed_result.result,
             GloveResult {
                 poll_index: 185,
-                vote: GloveVote::Nay,
+                direction: VoteDirection::Nay,
                 assigned_balances: vec![
                     AssignedBalance {
                         account: AccountId32::from_str("28836d6f19d5cd8dd8b26da754c63ae337c6f938a7dc6a12e439ad8a1c69fb0d").unwrap(),
-                        nonce: 1406474393,
-                        balance: 870545507137,
+                        nonce: 2023548734,
+                        balance: 1076669561362,
                         conviction: Conviction::None
                     },
                     AssignedBalance {
                         account: AccountId32::from_str("841f65d84a0ffa95b378923a0d879f188d2a4aa5cb0f97df84fb296788cb6e3e").unwrap(),
-                        nonce: 3000217442,
-                        balance: 7277014506261,
+                        nonce: 3199040729,
+                        balance: 7314891365174,
                         conviction: Conviction::Locked1x
                     },
                     AssignedBalance {
                         account: AccountId32::from_str("ca22927dff5da60838b78763a2b5ebdf080fa4f35bcbfc8c36b3b6c59a85cd6f").unwrap(),
-                        nonce:  3352555571,
-                        balance: 3691529986602,
+                        nonce:  2821157402,
+                        balance: 3447529073464,
                         conviction: Conviction::Locked3x
                     }
                 ]
@@ -226,8 +226,8 @@ mod tests {
         assert_eq!(
             glove_proof_lite.attestation_location,
             AttestationBundleLocation::SubstrateRemark(ExtrinsicLocation {
-                block_hash: H256::from_str("d7663e131edda194eabbec3ac5695e5b31c9e576e144025956e0cdbf90d4f9cb").unwrap(),
-                block_index: 2,
+                block_number: 11256762,
+                extrinsic_index: 2
             })
         );
 
@@ -252,7 +252,7 @@ mod tests {
         let original_glove_result = GloveProofLite::decode_envelope(GLOVE_PROOF_LITE_BYTES).unwrap().signed_result.result;
 
         let mut modified_glove_result = original_glove_result.clone();
-        modified_glove_result.vote = GloveVote::Aye;
+        modified_glove_result.direction = VoteDirection::Aye;
         assert_ne!(original_glove_result, modified_glove_result);
 
         let invalid_glove_proof = GloveProof {

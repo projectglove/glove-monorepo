@@ -6,7 +6,7 @@ use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
 use sp_core::H256;
 
-use common::{AssignedBalance, GloveResult, GloveVote, SignedVoteRequest};
+use common::{AssignedBalance, GloveResult, VoteDirection, SignedVoteRequest};
 
 pub fn mix_votes(
     genesis_hash: H256,
@@ -99,12 +99,12 @@ pub fn mix_votes(
 
     Ok(GloveResult {
         poll_index,
-        vote: if ayes_balance > nays_balance {
-            GloveVote::Aye
+        direction: if ayes_balance > nays_balance {
+            VoteDirection::Aye
         } else if ayes_balance < nays_balance {
-            GloveVote::Nay
+            VoteDirection::Nay
         } else {
-            GloveVote::Abstain
+            VoteDirection::Abstain
         },
         assigned_balances
     })
@@ -151,7 +151,7 @@ mod tests {
             mix_votes(GENESIS_HASH, &signed_requests),
             Ok(GloveResult {
                 poll_index: POLL_INDEX,
-                vote: GloveVote::Aye,
+                direction: VoteDirection::Aye,
                 assigned_balances: vec![assigned(&signed_requests[0], 10)]
             })
         );
@@ -167,7 +167,7 @@ mod tests {
             mix_votes(GENESIS_HASH, &signed_requests),
             Ok(GloveResult {
                 poll_index: POLL_INDEX,
-                vote: GloveVote::Abstain,
+                direction: VoteDirection::Abstain,
                 assigned_balances: vec![assigned(&signed_requests[0], 1), assigned(&signed_requests[1], 1)]
             })
         )
@@ -183,7 +183,7 @@ mod tests {
             mix_votes(GENESIS_HASH, &signed_requests),
             Ok(GloveResult {
                 poll_index: POLL_INDEX,
-                vote: GloveVote::Aye,
+                direction: VoteDirection::Aye,
                 assigned_balances: vec![assigned(&signed_requests[0], 10), assigned(&signed_requests[1], 5)]
             })
         );
@@ -199,7 +199,7 @@ mod tests {
             mix_votes(GENESIS_HASH, &signed_requests),
             Ok(GloveResult {
                 poll_index: POLL_INDEX,
-                vote: GloveVote::Nay,
+                direction: VoteDirection::Nay,
                 assigned_balances: vec![assigned(&signed_requests[0], 5), assigned(&signed_requests[1], 10)]
             })
         );
@@ -216,7 +216,7 @@ mod tests {
         let result = mix_votes(GENESIS_HASH, &signed_requests).unwrap();
         println!("{:?}", result);
 
-        assert_eq!(result.vote, GloveVote::Aye);
+        assert_eq!(result.direction, VoteDirection::Aye);
         assert_eq!(result.assigned_balances.len(), 4);
         assert_eq!(result.assigned_balances.iter().map(|a| a.balance).sum::<u128>(), 20);
         assert(signed_requests, result.assigned_balances);
@@ -230,7 +230,7 @@ mod tests {
         ];
         let result = mix_votes(GENESIS_HASH, &signed_requests).unwrap();
 
-        assert_eq!(result.vote, GloveVote::Nay);
+        assert_eq!(result.direction, VoteDirection::Nay);
         assert_eq!(result.assigned_balances.len(), 2);
         assert_eq!(result.assigned_balances.iter().map(|a| a.balance).sum::<u128>(), 17);
         assert(signed_requests, result.assigned_balances);

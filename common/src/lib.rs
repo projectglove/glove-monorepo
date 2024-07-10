@@ -1,6 +1,7 @@
 use fmt::Formatter;
 use std::fmt;
 use std::fmt::Display;
+use std::str::FromStr;
 
 use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use rand::random;
@@ -78,7 +79,7 @@ pub struct SignedGloveResult {
 pub struct GloveResult {
     #[codec(compact)]
     pub poll_index: u32,
-    pub vote: GloveVote,
+    pub direction: VoteDirection,
     pub assigned_balances: Vec<AssignedBalance>
 }
 
@@ -90,7 +91,7 @@ impl GloveResult {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Encode, Decode)]
-pub enum GloveVote {
+pub enum VoteDirection {
     Aye,
     Nay,
     Abstain
@@ -104,17 +105,28 @@ pub struct AssignedBalance {
     pub conviction: Conviction
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize, Encode, Decode, MaxEncodedLen)]
 pub struct ExtrinsicLocation {
-    pub block_hash: H256,
+    pub block_number: u32,
     /// Index of the extrinsic within the block.
     #[codec(compact)]
-    pub block_index: u32
+    pub extrinsic_index: u32
 }
 
 impl Display for ExtrinsicLocation {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}-{}", self.block_hash, self.block_index)
+        write!(formatter, "{}-{}", self.block_number, self.extrinsic_index)
+    }
+}
+
+impl FromStr for ExtrinsicLocation {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (block_number, extrinsic_index) = s.split_once('-').ok_or("Invalid ExtrinsicLocation format")?;
+        let block_number = block_number.parse().map_err(|_| "Invalid block number")?;
+        let extrinsic_index = extrinsic_index.parse().map_err(|_| "Invalid extrinsic index")?;
+        Ok(ExtrinsicLocation { block_number, extrinsic_index })
     }
 }
 
