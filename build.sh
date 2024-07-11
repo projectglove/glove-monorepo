@@ -18,6 +18,7 @@ glove_build_env cargo build --bins --workspace --exclude enclave -r
 glove_build_env touch --date='@0' target/x86_64-unknown-linux-musl/release/enclave
 glove_build_env docker build --no-cache -t glove-enclave -f enclave/Dockerfile .
 glove_build_env nitro-cli build-enclave --docker-uri glove-enclave --output-file target/release/glove.eif
+glove_build_env nitro-cli describe-eif --eif-path target/release/glove.eif | jq -r '.Measurements.PCR0' > target/release/enclave_measurement.txt
 docker cp glove-build-env:/glove/target .
 docker image rm glove-enclave > /dev/null
 docker rm -f glove-build-env > /dev/null

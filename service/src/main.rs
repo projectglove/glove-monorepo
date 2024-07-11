@@ -50,7 +50,11 @@ use ServiceError::InvalidSignature;
 #[derive(Parser, Debug)]
 #[command(version, about = "Glove proxy service")]
 struct Args {
-    /// Secret phrase for the Glove proxy account
+    /// Secret phrase for the Glove proxy account. This is a secret seed with optional derivation
+    /// paths. The account will be an Sr25519 key.
+    ///
+    /// See https://wiki.polkadot.network/docs/learn-account-advanced#derivation-paths for more
+    /// details.
     #[arg(long, value_parser = client_interface::parse_secret_phrase)]
     proxy_secret_phrase: Keypair,
 
@@ -58,11 +62,12 @@ struct Args {
     #[arg(long)]
     address: String,
 
-    /// URL for the network endpoint.
+    /// URL to a substrate node endpoint. The Glove service will use the API exposed by this to
+    /// interact with the network.
     ///
     /// See https://wiki.polkadot.network/docs/maintain-endpoints for more information.
     #[arg(long)]
-    network_url: String,
+    node_endpoint: String,
 
     /// Which mode the Glove enclave should run in.
     #[arg(long, value_enum, default_value_t = EnclaveMode::Nitro)]
@@ -71,11 +76,14 @@ struct Args {
 
 #[derive(ValueEnum, Debug, Clone)]
 enum EnclaveMode {
-    /// Run the enclave inside a AWS Nitro enclave environment.
+    /// Run the enclave inside a secure AWS Nitro enclave environment.
     Nitro,
-    /// Run the AWS Nitro enclave in debug mode. Note, this is insecure.
+    /// Run the AWS Nitro enclave in debug mode. Enclave logging will be enabled. This is INSECURE
+    /// and Glove proofs will be marked as such.
     Debug,
-    /// Run the enclave as a normal process. Note, this is insecure.
+    /// Run the enclave as a normal process. This is only useful for testing and development
+    /// purposes as an AWS Nitro instance is not required. This is INSECURE and Glove proofs will be
+    /// marked as such.
     Mock
 }
 
@@ -91,6 +99,11 @@ enum EnclaveMode {
 //  Caused by:
 //  connection closed)))))
 
+// TODO Permantely ban accounts which vote directly
+// TODO Endpoint for poll end time and other info?
+// TODO Update client to make it easy to verify on-chain vote
+// TODO No more votes after on-chain votes
+
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -105,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
 
     let enclave_handle = initialize_enclave(args.enclave_mode).await?;
 
-    let network = SubstrateNetwork::connect(args.network_url, args.proxy_secret_phrase).await?;
+    let network = SubstrateNetwork::connect(args.node_endpoint, args.proxy_secret_phrase).await?;
     info!("Connected: {:?}", network);
 
     let attestation_bundle = enclave_handle.send_receive::<AttestationBundle>(
@@ -197,6 +210,7 @@ async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
 // TODO Reject for zero balance
 // TODO Reject if new vote request reaches max batch size limit for poll
 // TODO Reject if voted directly or via another proxy already
+// TODO Reject polls for certain tracks based on config
 async fn vote(
     State(context): State<Arc<GloveContext>>,
     Json(signed_request): Json<SignedVoteRequest>
