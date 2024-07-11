@@ -144,7 +144,6 @@ impl GloveProofLite {
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub enum AttestationBundleLocation {
     SubstrateRemark(ExtrinsicLocation),
-    // Http(String)
 }
 
 #[derive(thiserror::Error, Debug)]

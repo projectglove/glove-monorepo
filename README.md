@@ -38,14 +38,14 @@ to provision the correct EC2 instance. Make sure to use x86-64, with the Nitro E
 Then install the [Nitro Enclaves CLI](https://docs.aws.amazon.com/enclaves/latest/user/nitro-enclave-cli-install.html).
 Make sure to allocate at least 512 MiB for the enclave.
 
-Make sure the `service` binary and the `glove.eif` files are in the same directoy. If you built using `build.sh` they
+Make sure the `service` binary and the `glove.eif` files are in the same directory. If you built using `build.sh` they
 will both be in `target/release`:
 
 ```shell
-target/release/service --address=<LISTEN> --proxy-secret-phrase=<SECRET PHRASE> --network-url=<URL>
+target/release/service --address=<LISTEN> --proxy-secret-phrase=<SECRET PHRASE> --node-endpoint=<URL>
 ```
 
-Run with `--help` to see example network endpoints for various chains.
+To understand what these arguments mean and others, you will need to first read the help with `--help`.
 
 You can check the enclave is running with:
 
@@ -59,9 +59,14 @@ start the enclave in debug mode and output to the console.
 > [!WARNING]
 > Debug mode is not secure and will be reflected in the enclave's remote attestation. Do not enable this in production.
 
-## Client CLI
+# Client CLI
 
-There is a CLI client for interacting with the Glove service from the command line:
+There is a CLI client for interacting with the Glove service from the command line. It is built alonside the Glove
+service and enclave with the `./build.sh` command (described above). To build it on a local machine:
+
+```shell
+cargo build --release --bin client
+```
 
 ```shell
 target/release/client --help
@@ -73,7 +78,7 @@ First join Glove with the `join-glove` command and then vote with `vote`.
 
 ## MacOS
 
-If building on MacOS, then use `cargo` directly rather than the build script. Only mock mode will be available.
+If building on MacOS, then use `cargo` directly rather than the `./build.sh` script. Only mock mode will be available.
 
 ## Regenerating the Substrate metadata
 
