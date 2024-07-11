@@ -1,0 +1,21 @@
+name: Release
+
+on:
+  push:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add software to the releases page
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/release/service
+            target/release/glove.eif
+          make_latest: true
+          prerelease: true # For now
