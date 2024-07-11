@@ -1,0 +1,14 @@
+[Unit]
+Description=Glove Nitro service
+After=network.target
+
+[Service]
+ExecStart=/usr/local/glove/service
+Type=notify
+Restart=always
+StandardOutput=/usr/local/glove/logs/glove.log
+StandardError=/usr/local/glove/logs/glove-err.logs
+
+[Install]
+WantedBy=default.target
+RequiredBy=network.target

@@ -1,0 +1,40 @@
+---
+- name: Prepare directory
+  ansible.builtin.file:
+    path: /usr/local/{{ item }}
+    owner: root
+    group: root
+    mode: 0755
+    state: directory
+    loop:
+      - glove
+      - glove/log
+
+#- name: Download Glove artifacts
+#  ansible.builtin.get_url:
+#    url:
+#    dest: /usr/local/glove
+#    owner: root
+#    group: root
+#    mode: 0755
+#    loop:
+#       - service
+#       - glove.eif
+#    notify:
+#       - Reload daemon
+
+- name: Copy Glove Service file
+  ansible.builtin.copy:
+    src: glove.service
+    dest: /etc/systemd/system
+    owner: root
+    group: root
+    mode: 0644
+    notify:
+      - Reload daemon
+
+- name: Set Glove service
+  ansible.builtin.systemd_service:
+    name: glove
+    state: started
+    enabled: true
