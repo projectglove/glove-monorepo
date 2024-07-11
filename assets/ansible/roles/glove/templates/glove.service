@@ -4,10 +4,8 @@ After=network.target
 
 [Service]
 ExecStart=/usr/local/glove/service --proxy-secret-phrase "{{ glove_proxy_secret_phrase }}" --address {{ glove_address }} --node-endpoint {{ glove_node_endpoint }}
-Type=notify
+Type=simple
 Restart=always
-StandardOutput=/usr/local/glove/logs/glove.log
-StandardError=/usr/local/glove/logs/glove-err.logs
 
 [Install]
 WantedBy=default.target

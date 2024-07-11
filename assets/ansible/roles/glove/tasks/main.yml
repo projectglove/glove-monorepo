@@ -45,7 +45,7 @@
     group: root
     mode: 0644
   notify:
-    - Reload daemon
+    - Restart daemon
 
 - name: Set Glove service
   ansible.builtin.systemd_service:
