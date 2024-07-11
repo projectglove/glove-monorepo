@@ -3,7 +3,7 @@ Description=Glove Nitro service
 After=network.target
 
 [Service]
-ExecStart=/usr/local/glove/service
+ExecStart=/usr/local/glove/service --proxy-secret-phrase "{{ glove_proxy_secret_phrase }}" --address {{ glove_address }} --node-endpoint {{ glove_node_endpoint }}
 Type=notify
 Restart=always
 StandardOutput=/usr/local/glove/logs/glove.log

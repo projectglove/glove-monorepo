@@ -1,14 +1,28 @@
 ---
+- name: Install Nitro
+  ansible.builtin.dnf:
+    name:  aws-nitro-enclaves-cli
+    state: latest
+
+- name: Enable services (docker, nitro alocator)
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop:
+    - docker
+    - nitro-enclaves-allocator
+
 - name: Prepare directory
   ansible.builtin.file:
-    path: /usr/local/{{ item }}
+    path: "/usr/local/{{ item }}"
     owner: root
     group: root
     mode: 0755
     state: directory
-    loop:
-      - glove
-      - glove/log
+  loop:
+    - glove
+    - glove/log
 
 #- name: Download Glove artifacts
 #  ansible.builtin.get_url:
@@ -24,14 +38,14 @@
 #       - Reload daemon
 
 - name: Copy Glove Service file
-  ansible.builtin.copy:
+  ansible.builtin.template:
     src: glove.service
     dest: /etc/systemd/system
     owner: root
     group: root
     mode: 0644
-    notify:
-      - Reload daemon
+  notify:
+    - Reload daemon
 
 - name: Set Glove service
   ansible.builtin.systemd_service:
