@@ -12,3 +12,5 @@ target/
 .DS_Store
 
 .idea/
+
+terraform.tfstate
