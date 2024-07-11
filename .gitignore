@@ -13,4 +13,4 @@ target/
 
 .idea/
 
-terraform.tfstate
+terraform.tfstate*
