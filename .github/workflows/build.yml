@@ -38,3 +38,13 @@ jobs:
         run: |
           echo '### Enclave Image Measurement' >> $GITHUB_STEP_SUMMARY
           cat target/release/enclave_measurement.txt >> $GITHUB_STEP_SUMMARY
+
+      - name: Add software to the releases page
+        uses: softprops/action-gh-release@v2
+        make_latest: true
+        prerelease: true # For now
+        with:
+          files: |
+            target/release/service
+            target/release/glove.eif
+
