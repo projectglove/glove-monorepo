@@ -3,7 +3,7 @@ resource "aws_lb" "enclave" {
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.lb_enclave.id]
-  subnets            = [for subnet in data.aws_subnets.default : subnet.id]
+  subnets            = [for s in data.aws_subnets.default.ids: s]
 
   enable_deletion_protection = true
 
@@ -21,28 +21,32 @@ resource "aws_security_group" "lb_enclave" {
   vpc_id      = data.aws_vpc.default.id
 }
 
-resource "aws_vpc_security_group_ingress_rule" "http" {
-  security_group_id = aws_security_group.lb_enclave
+resource "aws_security_group_rule" "http" {
+  type              = "ingress"
+  protocol          = "tcp"
   from_port         = 80
   to_port           = 80
-  ip_protocol       = "tcp"
+  cidr_blocks         = ["0.0.0.0/0"]
   description       = "HTTP web traffic"
-  cidr_ipv4         = "0.0.0.0/0"
+  security_group_id = aws_security_group.lb_enclave.id
 }
 
-resource "aws_vpc_security_group_ingress_rule" "https" {
-  security_group_id = aws_security_group.lb_enclave
+resource "aws_security_group_rule" "https" {
+  type              = "ingress"
+  protocol          = "tcp"
   from_port         = 443
   to_port           = 443
-  ip_protocol       = "tcp"
+  cidr_blocks         = ["0.0.0.0/0"]
   description       = "HTTPS web traffic"
-  cidr_ipv4         = "0.0.0.0/0"
+  security_group_id = aws_security_group.lb_enclave.id
 }
 
-resource "aws_vpc_security_group_egress_rule" "all" {
-  security_group_id = aws_security_group.lb_enclave
+resource "aws_security_group_rule" "all" {
+  type              = "egress"
+  protocol          = "-1"
   from_port         = 0
   to_port           = 0
-  ip_protocol       = "-1"
-  cidr_ipv4         = "0.0.0.0/0"
+  cidr_blocks         = ["0.0.0.0/0"]
+  description       = "All egress"
+  security_group_id = aws_security_group.lb_enclave.id
 }
