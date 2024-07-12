@@ -1,22 +1,3 @@
-// It assumes that the AWS profije is called glove-test
-provider "aws" {
-  region  = "us-east-2"
-  profile = "glove-test"
-}
-
-data "aws_ami" "al2023" {
-  most_recent = true
-  owners      = ["amazon"]
-  filter {
-    name   = "name"
-    values = ["al2023-ami-2023*"]
-  }
-}
-
-data "aws_vpc" "default" {
-  default = true
-}
-
 resource "aws_key_pair" "deployer" {
   key_name   = "deployer-key"
   public_key = file("~/.ssh/id_ed25519.pub")
