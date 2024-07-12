@@ -13,10 +13,30 @@ resource "aws_lb" "enclave" {
 */
 }
 
-resource "aws_lb_listener" "enclave" {
+resource "aws_lb_listener" "enclave-http" {
   load_balancer_arn = aws_lb.enclave.arn
   port              = "80"
   protocol          = "HTTP"
+  default_action {
+    type = "redirect"
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+  /*  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.enclave.arn
+  }
+*/
+}
+
+resource "aws_lb_listener" "enclave-https" {
+  load_balancer_arn = aws_lb.enclave.arn
+  port              = "443"
+  protocol          = "HTTPS"
+  certificate_arn   = aws_acm_certificate_validation.test.certificate_arn
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.enclave.arn
@@ -31,7 +51,6 @@ resource "aws_lb_target_group" "enclave" {
   health_check {
     path = "/info"
   }
-
 }
 
 resource "aws_lb_target_group_attachment" "enclave" {
