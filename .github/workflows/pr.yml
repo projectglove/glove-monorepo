@@ -3,9 +3,9 @@ name: Build for PR
 on:
   pull_request:
     branches: [ "main" ]
-  paths-ignore:
-    - devops
-    - .github
+    paths-ignore:
+      - devops
+      - .github
 
 env:
   CARGO_TERM_COLOR: always
