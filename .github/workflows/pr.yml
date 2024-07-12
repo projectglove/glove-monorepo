@@ -5,7 +5,7 @@ on:
     branches: [ "main" ]
     paths-ignore:
       - devops
-      - '.github'
+      - '**/*.github'
 
 env:
   CARGO_TERM_COLOR: always
