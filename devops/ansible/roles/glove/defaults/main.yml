@@ -1,6 +1,6 @@
 ---
 # Address the service will listen on
-glove_address: localhost:8080
+glove_address: 0.0.0.0:8080
 
 # URL to a substrate node endpoint
 # See https://wiki.polkadot.network/docs/maintain-endpoints for more information.
