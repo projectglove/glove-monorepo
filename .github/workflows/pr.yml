@@ -1,8 +1,6 @@
-name: Build
+name: Build for PR
 
 on:
-  push:
-    branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
 
@@ -19,14 +17,6 @@ jobs:
 
       - name: Build
         run: ./build.sh
-
-      - name: Service and enclave artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: glove-service
-          path: |
-            target/release/service
-            target/release/glove.eif
 
       - name: Enclave measurement artifact
         uses: actions/upload-artifact@v4

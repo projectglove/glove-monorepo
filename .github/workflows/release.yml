@@ -10,8 +10,34 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Add software to the releases page
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: ./build.sh
+
+      - name: Service and enclave artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: glove-service
+          path: |
+            target/release/service
+            target/release/glove.eif
+
+      - name: Enclave measurement artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: enclave_measurement
+          path: target/release/enclave_measurement.txt
+
+      - name: Adding measurement to summary
+        run: |
+          echo '### Enclave Image Measurement' >> $GITHUB_STEP_SUMMARY
+          cat target/release/enclave_measurement.txt >> $GITHUB_STEP_SUMMARY
+
+      - name: Make release
         uses: softprops/action-gh-release@v2
         with:
           files: |
