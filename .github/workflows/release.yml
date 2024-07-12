@@ -38,10 +38,8 @@ jobs:
           cat target/release/enclave_measurement.txt >> $GITHUB_STEP_SUMMARY
 
       - name: Make release
-        uses: softprops/action-gh-release@v2
+        uses: ncipollo/release-action@v1
         with:
-          files: |
-            target/release/service
-            target/release/glove.eif
-          make_latest: true
+          artifacts: target/release/service, target/release/glove.eif
+          makeLatest: true
           prerelease: true # For now
