@@ -1,4 +1,14 @@
 ---
+- name: Install pip (for github action)
+  ansible.builtin.dnf:
+    name: python3-pip
+    state: latest
+
+- name: Install githbub3.py (for github action)
+  ansible.builtin.pip:
+    name: github3.py
+    state: latest
+
 - name: Install Nitro
   ansible.builtin.dnf:
     name:  aws-nitro-enclaves-cli
@@ -24,18 +34,26 @@
     - glove
     - glove/log
 
-#- name: Download Glove artifacts
-#  ansible.builtin.get_url:
-#    url:
-#    dest: /usr/local/glove
-#    owner: root
-#    group: root
-#    mode: 0755
-#    loop:
-#       - service
-#       - glove.eif
-#    notify:
-#       - Reload daemon
+- name: Get latest release of glove
+  community.general.github_release:
+    user: projectglove
+    repo: glove-monorepo
+    action: latest_release
+  register: glove_release
+
+
+- name: Download Glove artifacts
+  ansible.builtin.get_url:
+    url: "https://github.com/projectglove/glove-monorepo/releases/tag/{{glove_release.tag }}/{{ item }}"
+    dest: /usr/local/glove
+    owner: root
+    group: root
+    mode: 0755
+  loop:
+     - service
+     - glove.eif
+  notify:
+     - Restart daemon
 
 - name: Copy Glove Service file
   ansible.builtin.template:
