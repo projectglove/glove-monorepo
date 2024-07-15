@@ -42,9 +42,7 @@ jobs:
         uses: mathieudutour/github-tag-action@v6.2
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          pre_release_branches: main
-          append_to_pre_release_tag: test
-          custom_tag: ${{ github.sha }}
+          release_branches: main
 
       - name: Make release
         uses: ncipollo/release-action@v1
