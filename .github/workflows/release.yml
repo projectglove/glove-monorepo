@@ -37,18 +37,13 @@ jobs:
           echo '### Enclave Image Measurement' >> $GITHUB_STEP_SUMMARY
           cat target/release/enclave_measurement.txt >> $GITHUB_STEP_SUMMARY
 
-      - name: Bump version and push tag
-        id: tag_version
-        uses: mathieudutour/github-tag-action@v6.2
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          release_branches: main
-
       - name: Make release
-        uses: ncipollo/release-action@v1
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
         with:
-          artifacts: target/release/service, target/release/glove.eif
-          makeLatest: true
-          prerelease: true # For now
+          files: |
+            target/release/service
+            target/release/glove.eif
+          make_latest: true
           tag: ${{ steps.tag_version.outputs.new_tag }}
           name: Release ${{ steps.tag_version.outputs.new_tag }}
