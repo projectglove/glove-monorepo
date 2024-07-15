@@ -34,17 +34,28 @@ impl SignedVoteRequest {
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
 pub struct VoteRequest {
+    /// The account on whose behalf the Glove proxy will vote for.
     pub account: AccountId32,
+    /// The genesis hash of the substrate chain where the poll is taking place. This is necessary
+    /// to ensure the vote is not replayed on a different chain.
     pub genesis_hash: H256,
+    /// The index of the poll/referendum.
     #[codec(compact)]
     pub poll_index: u32,
-    /// Nonce value to prevent replay attacks. Only needs to be unique for the same poll.
+    /// Nonce value to prevent replay attacks. Needs to be unique for the same poll.
     pub nonce: u32,
+    /// `true` for aye, `false` for nay.
     pub aye: bool,
+    /// The amount of tokens to vote with. The units are in
+    /// [Planck](https://wiki.polkadot.network/docs/learn-DOT#the-planck-unit).
     pub balance: u128,
     pub conviction: Conviction,
 }
 
+/// Conviction voting multiplier.
+///
+/// See [here](https://wiki.polkadot.network/docs/learn-polkadot-opengov#voluntary-locking-conviction-voting)
+/// for more details.
 #[derive(Debug, Copy, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
 pub enum Conviction {
     None,
@@ -69,9 +80,12 @@ impl VoteRequest {
     }
 }
 
+/// Signed Glove result from an enclave. The signature can be verified using `signing_key` from
+/// the [`attestation::AttestedData`].
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct SignedGloveResult {
     pub result: GloveResult,
+    /// Signature of `result` in SCALE endoding.
     pub signature: ed25519::Signature
 }
 
@@ -162,6 +176,7 @@ mod tests {
     use rand::random;
     use serde_json::{json, Value};
     use sp_core::{Pair, sr25519};
+    use subxt_signer::sr25519::dev;
 
     use Conviction::{Locked3x, Locked6x};
 
@@ -198,6 +213,27 @@ mod tests {
 
         let deserialized_signed_request: SignedVoteRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized_signed_request, signed_request);
+    }
+
+    #[test]
+    fn signed_vote_request_json_using_polkadot_js() {
+        // Produced from test-resources/vote-request-example.mjs
+        let json = r#"
+{
+  "request": "8eaf04151687736326c9fea17e25fc5287613693c912909cb226aa4794f26a486408de7737c59c238890533af25896a2c20608d8b380bb01029acb392781063ee502f5c1912301009c5b3607020000000000000000000002",
+  "signature": "01ea13f59165bc295d1e99629622dc0c13a1c7163017359178606f0e36d1d2c246c021190cf0508b0d60d292a00ba06ed396d5559fe7334c78c95bf289e84ebc81"
+}
+"#;
+
+        let signed_request = serde_json::from_str::<SignedVoteRequest>(json).unwrap();
+        assert!(signed_request.verify());
+        let request = signed_request.request;
+        assert_eq!(request.account, dev::bob().public_key().0.into());
+        assert_eq!(request.poll_index, 185);
+        assert_eq!(request.genesis_hash, H256::from_str("6408de7737c59c238890533af25896a2c20608d8b380bb01029acb392781063e").unwrap());
+        assert_eq!(request.balance, 2230000000000);
+        assert_eq!(request.aye, true);
+        assert_eq!(request.conviction, Conviction::Locked2x);
     }
 
     #[test]

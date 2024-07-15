@@ -349,7 +349,8 @@ pub fn account_to_subxt_multi_address(account: AccountId32) -> SubxtMultiAddress
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServiceInfo {
     pub proxy_account: AccountId32,
-    pub network_url: String,
+    pub network_name: String,
+    pub node_endpoint: String,
     #[serde(with = "common::serde_over_hex_scale")]
     pub attestation_bundle: AttestationBundle
 }
@@ -380,7 +381,8 @@ mod tests {
     fn service_info_json() {
         let service_info = ServiceInfo {
             proxy_account: dev::alice().public_key().0.into(),
-            network_url: "wss://polkadot.api.onfinality.io/public-ws".to_string(),
+            network_name: "polkadot".to_string(),
+            node_endpoint: "wss://polkadot.api.onfinality.io/public-ws".to_string(),
             attestation_bundle: AttestationBundle {
                 attested_data: AttestedData {
                     genesis_hash: random::<[u8; 32]>().into(),
@@ -397,7 +399,8 @@ mod tests {
             serde_json::from_str::<Value>(&json).unwrap(),
             json!({
                 "proxy_account": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
-                "network_url": "wss://polkadot.api.onfinality.io/public-ws",
+                "network_name": "polkadot",
+                "node_endpoint": "wss://polkadot.api.onfinality.io/public-ws",
                 "attestation_bundle": hex::encode(&service_info.attestation_bundle.encode())
             })
         );

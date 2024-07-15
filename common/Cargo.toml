@@ -23,4 +23,5 @@ hex.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+subxt-signer.workspace = true
 # TODO client-interface and enclave-interface should be merged into common but behind feature flags

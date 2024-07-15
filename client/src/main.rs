@@ -38,7 +38,7 @@ async fn main() -> Result<SuccessOutput> {
         .json::<ServiceInfo>().await?;
 
     let network = SubstrateNetwork::connect(
-        service_info.network_url.clone(),
+        service_info.node_endpoint.clone(),
         args.secret_phrase
     ).await?;
 
@@ -224,10 +224,10 @@ fn info(service_info: &ServiceInfo) -> Result<SuccessOutput> {
         Err(attestation_error) => &format!("Error verifying attestation: {}", attestation_error)
     };
 
-    println!("Glove proxy account:   {}", service_info.proxy_account);
-    println!("Enclave:               {}", enclave_info);
-    println!("Substrate network URL: {}", service_info.network_url);
-    println!("Genesis hash:          {}", hex::encode(ab.attested_data.genesis_hash));
+    println!("Glove proxy account: {}", service_info.proxy_account);
+    println!("Enclave:             {}", enclave_info);
+    println!("Substrate Network:   {}", service_info.network_name);
+    println!("Genesis hash:        {}", hex::encode(ab.attested_data.genesis_hash));
 
     Ok(SuccessOutput::None)
 }

@@ -1,4 +1,3 @@
-use io::Error as IoError;
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,6 +9,7 @@ use axum::Router;
 use axum::routing::{get, post};
 use cfg_if::cfg_if;
 use clap::{Parser, ValueEnum};
+use serde::Serialize;
 use sp_runtime::AccountId32;
 use subxt::Error as SubxtError;
 use subxt_signer::sr25519::Keypair;
@@ -37,15 +37,10 @@ use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError;
 use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError::Proxy;
 use client_interface::RemoveVoteRequest;
 use common::{AssignedBalance, attestation, BASE_AYE, BASE_NAY, Conviction, GloveResult, SignedGloveResult, SignedVoteRequest, VoteDirection};
-use common::attestation::{AttestationBundle, AttestationBundleLocation, GloveProof, GloveProofLite};
-use enclave_interface::{EnclaveRequest, EnclaveResponse};
+use common::attestation::{AttestationBundle, AttestationBundleLocation, GloveProofLite};
 use RuntimeError::ConvictionVoting;
-use service::{GloveState, Poll, subscan};
+use service::{GloveState, mixing, Poll, subscan};
 use service::enclave::EnclaveHandle;
-use ServiceError::{NotMember, PollNotOngoing};
-use ServiceError::ChainMismatch;
-use ServiceError::InsufficientBalance;
-use ServiceError::InvalidSignature;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Glove proxy service")]
@@ -103,7 +98,6 @@ enum EnclaveMode {
 // TODO Endpoint for poll end time and other info?
 // TODO Update client to make it easy to verify on-chain vote
 // TODO No more votes after on-chain votes
-
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -172,7 +166,7 @@ async fn initialize_enclave(enclave_mode: EnclaveMode) -> io::Result<EnclaveHand
                 if #[cfg(target_os = "linux")] {
                     service::enclave::nitro::connect(false).await
                 } else {
-                    return Err(IoError::new(
+                    return Err(io::Error::new(
                         io::ErrorKind::Unsupported,
                         "AWS Nitro enclaves are only supported on Linux"
                     ));
@@ -185,7 +179,7 @@ async fn initialize_enclave(enclave_mode: EnclaveMode) -> io::Result<EnclaveHand
                     warn!("Starting the enclave in debug mode, which is insecure");
                     service::enclave::nitro::connect(true).await
                 } else {
-                    return Err(IoError::new(
+                    return Err(io::Error::new(
                         io::ErrorKind::Unsupported,
                         "AWS Nitro enclaves are only supported on Linux"
                     ));
@@ -202,7 +196,8 @@ async fn initialize_enclave(enclave_mode: EnclaveMode) -> io::Result<EnclaveHand
 async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
     Json(ServiceInfo {
         proxy_account: context.network.account(),
-        network_url: context.network.url.clone(),
+        network_name: context.network.network_name.clone(),
+        node_endpoint: context.network.url.clone(),
         attestation_bundle: context.attestation_bundle.clone()
     })
 }
@@ -214,28 +209,28 @@ async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
 async fn vote(
     State(context): State<Arc<GloveContext>>,
     Json(signed_request): Json<SignedVoteRequest>
-) -> Result<(), ServiceError> {
+) -> Result<(), VoteError> {
     let network = &context.network;
     let request = &signed_request.request;
 
     if !signed_request.verify() {
-        return Err(InvalidSignature);
+        return Err(BadVoteRequestError::InvalidSignature.into());
     }
     if request.genesis_hash != network.api.genesis_hash() {
-        return Err(ChainMismatch);
+        return Err(BadVoteRequestError::ChainMismatch.into());
     }
     if !is_glove_member(network, request.account.clone(), network.account()).await? {
-        return Err(NotMember);
+        return Err(BadVoteRequestError::NotMember.into());
     }
     if network.get_ongoing_poll(request.poll_index).await?.is_none() {
-        return Err(PollNotOngoing);
+        return Err(BadVoteRequestError::PollNotOngoing.into());
     }
     // In a normal poll with multiple votes on both sides, the on-chain vote balance can be
     // significantly less than the vote request balance. A malicious actor could use this to scew
     // the poll by passing a balance value much higher than they have, knowing there's a good chance
     // it won't be fully utilised.
     if network.account_balance(request.account.clone()).await? < request.balance {
-        return Err(InsufficientBalance);
+        return Err(BadVoteRequestError::InsufficientBalance.into());
     }
     let poll = context.state.get_poll(request.poll_index);
     let initiate_mix = poll.add_vote_request(signed_request).await;
@@ -245,14 +240,15 @@ async fn vote(
     Ok(())
 }
 
+// TODO The request needs to be signed, otherwise anyone can remove anyone else's vote
 async fn remove_vote(
     State(context): State<Arc<GloveContext>>,
     Json(payload): Json<RemoveVoteRequest>
-) -> Result<(), ServiceError> {
+) -> Result<(), RemoveVoteError> {
     let network = &context.network;
     let account = &payload.account;
     if !is_glove_member(network, account.clone(), network.account()).await? {
-        return Err(NotMember);
+        return Err(RemoveVoteError::NotMember);
     }
     let Some(poll) = context.state.get_optional_poll(payload.poll_index) else {
         // Removing a non-existent vote request is a no-op
@@ -267,7 +263,8 @@ async fn remove_vote(
     match remove_result {
         // Unlikely since we've just checked above, but just in case
         Err(ProxyError::Module(_, ConvictionVoting(NotVoter))) => return Ok(()),
-        Err(ProxyError::Batch(BatchError::Module(_, Proxy(NotProxy)))) => return Err(NotMember),
+        Err(ProxyError::Batch(BatchError::Module(_, Proxy(NotProxy)))) =>
+            return Err(RemoveVoteError::NotMember),
         Err(error) => return Err(error.into()),
         Ok(_) => {}
     }
@@ -305,14 +302,18 @@ async fn mix_votes(context: &GloveContext, poll: &Poll) {
     }
 }
 
-async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, MixingError> {
+async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, mixing::Error> {
     info!("Mixing votes for poll {}", poll.index);
     let Some(poll_requests) = poll.begin_mix().await else {
         // Another task has already started mixing the votes
         return Ok(true);
     };
 
-    let signed_glove_result = mix_votes_in_enclave(&context, poll_requests.clone()).await?;
+    let signed_glove_result = mixing::mix_votes_in_enclave(
+        &context.enclave_handle,
+        &context.attestation_bundle,
+        poll_requests.clone()
+    ).await?;
 
     let result = submit_glove_result_on_chain(&context, &poll_requests, signed_glove_result).await;
     if result.is_ok() {
@@ -349,35 +350,6 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, Mixi
             }
             Ok(true)
         }
-    }
-}
-
-async fn mix_votes_in_enclave(
-    context: &GloveContext,
-    vote_requests: Vec<SignedVoteRequest>
-) -> Result<SignedGloveResult, MixingError> {
-    let request = EnclaveRequest::MixVotes(vote_requests);
-    let response = context.enclave_handle.send_receive::<EnclaveResponse>(&request).await?;
-    match response {
-        EnclaveResponse::GloveResult(signed_result) => {
-            let result = &signed_result.result;
-            debug!("Glove result from enclave, poll: {}, direction: {:?}, signature: {:?}",
-                result.poll_index, result.direction, signed_result.signature);
-            for assigned_balance in &result.assigned_balances {
-                debug!("  {:?}", assigned_balance);
-            }
-            // Double-check things all line up before committing on-chain
-            match GloveProof::verify_components(&signed_result, &context.attestation_bundle) {
-                Ok(_) => debug!("Glove proof verified"),
-                Err(InsecureMode) => warn!("Glove proof from insecure enclave"),
-                Err(error) => return Err(error.into())
-            }
-            Ok(signed_result)
-        }
-        EnclaveResponse::Error(enclave_error) => {
-            warn!("Mixing error from enclave: {:?}", enclave_error);
-            Err(enclave_error.into())
-        },
     }
 }
 
@@ -547,44 +519,119 @@ impl GloveContext {
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum MixingError {
-    #[error("IO error: {0}")]
-    Io(#[from] IoError),
-    #[error("Enclave error: {0}")]
-    Enclave(#[from] enclave_interface::Error),
-    #[error("Enclave attestation error: {0}")]
-    Attestation(#[from] attestation::Error)
+enum InternalError {
+    #[error("Subxt error: {0}")]
+    Subxt(#[from] SubxtError),
+    #[error("Proxy error: {0}")]
+    Proxy(#[from] ProxyError)
 }
 
 #[derive(thiserror::Error, Debug)]
-enum ServiceError {
+enum BadVoteRequestError {
     #[error("Signature on signed vote request is invalid")]
     InvalidSignature,
     #[error("Vote request is for a different chain")]
     ChainMismatch,
-    #[error("Client is not a member of the Glove proxy")]
+    #[error("Glove proxy is not assigned as a Governance proxy to the account")]
     NotMember,
     #[error("Poll is not ongoing or does not exist")]
     PollNotOngoing,
     #[error("Insufficient account balance for vote")]
-    InsufficientBalance,
-    #[error("Proxy error: {0}")]
-    Proxy(#[from] ProxyError),
-    #[error("Internal Subxt error: {0}")]
-    Subxt(#[from] SubxtError),
+    InsufficientBalance
 }
 
-impl IntoResponse for ServiceError {
+#[derive(thiserror::Error, Debug)]
+enum VoteError {
+    #[error("Bad request: {0}")]
+    BadRequest(#[from] BadVoteRequestError),
+    #[error("Internal error: {0}")]
+    Internal(#[from] InternalError)
+}
+
+impl From<SubxtError> for VoteError {
+    fn from(error: SubxtError) -> Self {
+        VoteError::Internal(error.into())
+    }
+}
+
+impl From<ProxyError> for VoteError {
+    fn from(error: ProxyError) -> Self {
+        VoteError::Internal(error.into())
+    }
+}
+
+#[derive(Serialize)]
+struct BadRequestResponse {
+    error: String,
+    description: String
+}
+
+impl IntoResponse for VoteError {
     fn into_response(self) -> Response {
         match self {
-            ChainMismatch => (StatusCode::BAD_REQUEST, self.to_string()),
-            NotMember => (StatusCode::BAD_REQUEST, self.to_string()),
-            PollNotOngoing => (StatusCode::BAD_REQUEST, self.to_string()),
-            InsufficientBalance => (StatusCode::BAD_REQUEST, self.to_string()),
-            _ => {
-                warn!("{:?}", self);
-                (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
+            VoteError::BadRequest(error) => {
+                let error_variant = match error {
+                    BadVoteRequestError::InvalidSignature => "InvalidSignature",
+                    BadVoteRequestError::ChainMismatch => "ChainMismatch",
+                    BadVoteRequestError::NotMember => "NotMember",
+                    BadVoteRequestError::PollNotOngoing => "PollNotOngoing",
+                    BadVoteRequestError::InsufficientBalance => "InsufficientBalance",
+                }.to_string();
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(BadRequestResponse { error: error_variant, description: error.to_string() })
+                ).into_response()
+            },
+            VoteError::Internal(error) => {
+                warn!("Error with vote request: {:?}", error);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".to_string()
+                ).into_response()
             }
-        }.into_response()
+        }
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+enum RemoveVoteError {
+    #[error("Glove proxy is not assigned as a Governance proxy to the account")]
+    NotMember,
+    #[error("Internal error: {0}")]
+    Internal(#[from] InternalError)
+}
+
+impl From<SubxtError> for RemoveVoteError {
+    fn from(error: SubxtError) -> Self {
+        RemoveVoteError::Internal(error.into())
+    }
+}
+
+impl From<ProxyError> for RemoveVoteError {
+    fn from(error: ProxyError) -> Self {
+        RemoveVoteError::Internal(error.into())
+    }
+}
+
+impl IntoResponse for RemoveVoteError {
+    fn into_response(self) -> Response {
+        match self {
+            RemoveVoteError::NotMember => {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(BadRequestResponse {
+                        error: "NotMember".to_string(),
+                        description: self.to_string()
+                    })
+                ).into_response()
+            },
+            RemoveVoteError::Internal(error) => {
+                warn!("Error with remove-vote request {:?}", error);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".to_string()
+                ).into_response()
+            }
+        }
     }
 }
