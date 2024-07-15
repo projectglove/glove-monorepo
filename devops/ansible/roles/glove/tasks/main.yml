@@ -41,10 +41,12 @@
     action: latest_release
   register: glove_release
 
+- ansible.builtin.debug:
+    msg: "{{ glove_release.tag}} is the tag"
 
 - name: Download Glove artifacts
   ansible.builtin.get_url:
-    url: "https://github.com/projectglove/glove-monorepo/releases/tag/{{glove_release.tag }}/{{ item }}"
+    url: https://github.com/projectglove/glove-monorepo/releases/download/{{glove_release.tag }}/{{ item }}
     dest: /usr/local/glove
     owner: root
     group: root
