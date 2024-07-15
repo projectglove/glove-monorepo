@@ -14,14 +14,14 @@ use subxt::Error::Runtime;
 use subxt_signer::sr25519::Keypair;
 
 use client::{Error, try_verify_glove_result};
-use client_interface::{account_to_subxt_multi_address, is_glove_member};
+use client_interface::{account_to_subxt_multi_address, is_glove_member, SignedRemoveVoteRequest};
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::Duplicate;
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::NotFound;
 use client_interface::metadata::runtime_types::polkadot_runtime::{ProxyType, RuntimeError};
 use client_interface::RemoveVoteRequest;
 use client_interface::ServiceInfo;
 use client_interface::SubstrateNetwork;
-use common::{attestation, Conviction, VoteDirection, SignedVoteRequest, VoteRequest};
+use common::{attestation, Conviction, SignedVoteRequest, VoteDirection, VoteRequest};
 use common::attestation::{Attestation, EnclaveInfo};
 use RuntimeError::Proxy;
 
@@ -38,7 +38,7 @@ async fn main() -> Result<SuccessOutput> {
         .json::<ServiceInfo>().await?;
 
     let network = SubstrateNetwork::connect(
-        service_info.network_url.clone(),
+        service_info.node_endpoint.clone(),
         args.secret_phrase
     ).await?;
 
@@ -174,13 +174,18 @@ async fn remove_vote(
     network: &SubstrateNetwork,
     poll_index: u32
 ) -> Result<SuccessOutput> {
-    let remove_vote_request = RemoveVoteRequest {
+    let request = RemoveVoteRequest {
         account: network.account(),
         poll_index
     };
+    let signature = MultiSignature::Sr25519(network.account_key.sign(&request.encode()).0.into());
+    let signed_request = SignedRemoveVoteRequest { request, signature };
+    if !signed_request.verify() {
+        bail!("Something has gone wrong with the signature")
+    }
     let response = http_client
         .post(url_with_path(glove_url, "remove-vote"))
-        .json(&remove_vote_request)
+        .json(&signed_request)
         .send().await
         .context("Unable to send remove vote request")?;
     if response.status() == StatusCode::OK {
@@ -224,10 +229,10 @@ fn info(service_info: &ServiceInfo) -> Result<SuccessOutput> {
         Err(attestation_error) => &format!("Error verifying attestation: {}", attestation_error)
     };
 
-    println!("Glove proxy account:   {}", service_info.proxy_account);
-    println!("Enclave:               {}", enclave_info);
-    println!("Substrate network URL: {}", service_info.network_url);
-    println!("Genesis hash:          {}", hex::encode(ab.attested_data.genesis_hash));
+    println!("Glove proxy account: {}", service_info.proxy_account);
+    println!("Enclave:             {}", enclave_info);
+    println!("Substrate Network:   {}", service_info.network_name);
+    println!("Genesis hash:        {}", hex::encode(ab.attested_data.genesis_hash));
 
     Ok(SuccessOutput::None)
 }

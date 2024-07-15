@@ -11,6 +11,8 @@ use sp_core::{ed25519, H256, Pair};
 
 use crate::{ExtrinsicLocation, nitro, SignedGloveResult};
 
+/// Represents a Glove proof of the mixing result done by a secure enclave. The votes on-chain
+/// must be compared to the result in the proof to ensure the mixing was done correctly.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct GloveProof {
     pub signed_result: SignedGloveResult,
@@ -40,6 +42,10 @@ impl GloveProof {
     }
 }
 
+/// An attestation bundle is a combination of [AttestedData] and [Attestation].
+///
+/// [verify] must be called to ensure the attestation is valid and comes from a genuine secure
+/// enclave and to confirm the [AttestedData] matches the attestation.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct AttestationBundle {
     pub attested_data: AttestedData,
@@ -52,7 +58,10 @@ pub struct AttestationBundle {
 pub const ATTESTATION_BUNDLE_ENCODING_VERSION: u8 = 1;
 
 impl AttestationBundle {
+    /// Verify the attesation and prove the enclave is secure and the attested data came from it.
     ///
+    /// Note, this does not prove the attestation is for a enclave running Glove. For that the
+    /// [EnclaveInfo] that's returned must be checked.
     pub fn verify(&self) -> Result<EnclaveInfo, Error> {
         match &self.attestation {
             Attestation::Nitro(nitro_attestation) => {
@@ -95,18 +104,26 @@ impl AttestationBundle {
     }
 }
 
+/// The attested data that is signed by the enclave.
 #[derive(Debug, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
 pub struct AttestedData {
+    /// The genesis hash of the chain the enclave is working on.
     pub genesis_hash: H256,
+    /// The signing key the enclave is using to sign Glove proofs.
     pub signing_key: ed25519::Public
 }
 
+/// Enum of the various attestation types.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub enum Attestation {
+    /// AWS Nitro Enclaves attestation
     Nitro(nitro::Attestation),
+    /// Marker for a mock enclave. There is no hardware security in a mock enclave and is therefore
+    /// only suitable for testing.
     Mock
 }
 
+/// The information about the enclave that produced the attestation.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub enum EnclaveInfo {
     Nitro(nitro::EnclaveInfo)
