@@ -45,5 +45,3 @@ jobs:
             target/release/service
             target/release/glove.eif
           make_latest: true
-          tag: ${{ steps.tag_version.outputs.new_tag }}
-          name: Release ${{ steps.tag_version.outputs.new_tag }}
