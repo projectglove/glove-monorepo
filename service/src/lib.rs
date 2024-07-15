@@ -12,6 +12,7 @@ use common::SignedVoteRequest;
 
 pub mod enclave;
 pub mod subscan;
+pub mod mixing;
 
 #[derive(Default)]
 pub struct GloveState {

@@ -14,10 +14,15 @@ static ROOT_CA_BYTES: &[u8] = include_bytes!("../../assets/aws-nitro-root.pem");
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct EnclaveInfo {
+    /// The enclave image measurement (`PCR0`). This value must be checked against known
+    /// measurements of Glove enclaves.
     pub image_measurement: Vec<u8>,
-    // TODO Image signer
 }
 
+/// Attestation document from AWS Nitro Enclaves.
+///
+/// The enclave itself by either be running in secure mode or debug mode. This can be determined by
+/// calling [crate::attestation::AttestationBundle::verify].
 #[derive(Debug, Clone)]
 pub struct Attestation(CoseSign1);
 

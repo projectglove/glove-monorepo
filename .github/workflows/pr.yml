@@ -1,0 +1,33 @@
+name: Build for PR
+
+on:
+  pull_request:
+    branches: [ "main" ]
+    paths-ignore:
+      - devops
+      - '**/*.github' # doesn't work
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: ./build.sh
+
+      - name: Enclave measurement artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: enclave_measurement
+          path: target/release/enclave_measurement.txt
+
+      - name: Adding measurement to summary
+        run: |
+          echo '### Enclave Image Measurement' >> $GITHUB_STEP_SUMMARY
+          cat target/release/enclave_measurement.txt >> $GITHUB_STEP_SUMMARY

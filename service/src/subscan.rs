@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use serde_with::DisplayFromStr;
 use serde_with::serde_as;
 use sp_runtime::AccountId32;
-use tracing::debug;
 
 use client_interface::SubstrateNetwork;
 use common::ExtrinsicLocation;
@@ -24,7 +23,6 @@ pub async fn get_votes(
     };
 
     loop {
-        debug!("Fetching votes: {:?}", &request);
         let response = http_client
             .post(&url)
             .json(&request)
@@ -33,9 +31,6 @@ pub async fn get_votes(
         let Some(mut votes) = response.data.list else {
             break;
         };
-        for vote in &votes {
-            debug!("  {:?}", vote);
-        }
         all_votes.append(&mut votes);
         request.page += 1;
     }
