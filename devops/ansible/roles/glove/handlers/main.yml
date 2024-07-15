@@ -1,0 +1,6 @@
+---
+- name: Restart daemon
+  ansible.builtin.systemd_service:
+    name: glove
+    state: restarted
+    enabled: true

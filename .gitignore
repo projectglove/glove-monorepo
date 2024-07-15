@@ -8,3 +8,5 @@ target/
 *.pdb
 .DS_Store
 .idea/
+
+terraform.tfstate*

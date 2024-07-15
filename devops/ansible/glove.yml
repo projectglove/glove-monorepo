@@ -1,0 +1,6 @@
+---
+- hosts: enclave
+  become: true
+  roles:
+    - glove
+

@@ -45,3 +45,17 @@ jobs:
             target/release/service
             target/release/glove.eif
           make_latest: true
+
+      - name: Install Ansible
+        run: |
+          sudo apt update
+          sudo apt install software-properties-common
+          sudo add-apt-repository --yes --update ppa:ansible/ansible
+          sudo apt install ansible
+
+      - name: Run Ansible
+        uses: dawidd6/action-ansible-playbook@v2
+        playbook: glove.yml
+        directory: devops/ansible
+        keys: {{ secret.SSH_PRIVATE_KEY }}
+
