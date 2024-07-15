@@ -17,12 +17,12 @@ use tokio::net::TcpListener;
 use tokio::spawn;
 use tokio::time::sleep;
 use tower_http::trace::TraceLayer;
-use tracing::{debug, info};
+use tracing::{debug, error, info, trace};
 use tracing::log::warn;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
 use attestation::Error::InsecureMode;
-use client_interface::{account, is_glove_member, ProxyError, ServiceInfo, SubstrateNetwork};
+use client_interface::{account, is_glove_member, ProxyError, ServiceInfo, SignedRemoveVoteRequest, SubstrateNetwork};
 use client_interface::account_to_subxt_multi_address;
 use client_interface::BatchError;
 use client_interface::metadata::runtime_types::frame_system::pallet::Call as SystemCall;
@@ -35,7 +35,6 @@ use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::NotP
 use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeCall;
 use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError;
 use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError::Proxy;
-use client_interface::RemoveVoteRequest;
 use common::{AssignedBalance, attestation, BASE_AYE, BASE_NAY, Conviction, GloveResult, SignedGloveResult, SignedVoteRequest, VoteDirection};
 use common::attestation::{AttestationBundle, AttestationBundleLocation, GloveProofLite};
 use RuntimeError::ConvictionVoting;
@@ -113,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
     let enclave_handle = initialize_enclave(args.enclave_mode).await?;
 
     let network = SubstrateNetwork::connect(args.node_endpoint, args.proxy_secret_phrase).await?;
-    info!("Connected: {:?}", network);
+    debug!("Connected: {:?}", network);
 
     let attestation_bundle = enclave_handle.send_receive::<AttestationBundle>(
         &network.api.genesis_hash()
@@ -141,6 +140,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(TraceLayer::new_for_http())
         .with_state(glove_context);
     let listener = TcpListener::bind(args.address).await?;
+    info!("Listening for requests...");
     axum::serve(listener, router).await?;
 
     Ok(())
@@ -150,7 +150,7 @@ async fn main() -> anyhow::Result<()> {
 fn start_background_checker(context: Arc<GloveContext>) {
     spawn(async move {
         loop {
-            debug!("Checking for Glove violators...");
+            trace!("Checking for Glove violators...");
             if let Err(error) = context.remove_glove_violators().await {
                 warn!("Error when checking for Glove violators: {:?}", error)
             }
@@ -240,17 +240,20 @@ async fn vote(
     Ok(())
 }
 
-// TODO The request needs to be signed, otherwise anyone can remove anyone else's vote
 async fn remove_vote(
     State(context): State<Arc<GloveContext>>,
-    Json(payload): Json<RemoveVoteRequest>
+    Json(signed_request): Json<SignedRemoveVoteRequest>
 ) -> Result<(), RemoveVoteError> {
     let network = &context.network;
-    let account = &payload.account;
-    if !is_glove_member(network, account.clone(), network.account()).await? {
-        return Err(RemoveVoteError::NotMember);
+    let request = &signed_request.request;
+    let account = &request.account;
+    if !signed_request.verify() {
+        return Err(BadRemoveVoteRequestError::InvalidSignature.into());
     }
-    let Some(poll) = context.state.get_optional_poll(payload.poll_index) else {
+    if !is_glove_member(network, account.clone(), network.account()).await? {
+        return Err(BadRemoveVoteRequestError::NotMember.into());
+    }
+    let Some(poll) = context.state.get_optional_poll(request.poll_index) else {
         // Removing a non-existent vote request is a no-op
         return Ok(());
     };
@@ -258,22 +261,19 @@ async fn remove_vote(
         // Another task has already started mixing the votes
         return Ok(());
     };
-
-    let remove_result = proxy_remove_vote(network, payload.account, payload.poll_index).await;
+    let remove_result = proxy_remove_vote(network, account.clone(), request.poll_index).await;
     match remove_result {
         // Unlikely since we've just checked above, but just in case
         Err(ProxyError::Module(_, ConvictionVoting(NotVoter))) => return Ok(()),
         Err(ProxyError::Batch(BatchError::Module(_, Proxy(NotProxy)))) =>
-            return Err(RemoveVoteError::NotMember),
+            return Err(BadRemoveVoteRequestError::NotMember.into()),
         Err(error) => return Err(error.into()),
         Ok(_) => {}
     }
-
     if initiate_mix {
         // TODO Only do the mixing if the votes were previously submitted on-chain
         schedule_vote_mixing(context, poll);
     }
-
     Ok(())
 }
 
@@ -476,6 +476,7 @@ impl GloveContext {
         for poll in self.state.get_polls() {
             // Use this opportunity to do some garbage collection and remove any expired polls
             if self.network.get_ongoing_poll(poll.index).await?.is_none() {
+                debug!("Removing poll {} as it is no longer ongoing", poll.index);
                 self.state.remove_poll(poll.index);
                 continue;
             }
@@ -594,9 +595,17 @@ impl IntoResponse for VoteError {
 }
 
 #[derive(thiserror::Error, Debug)]
-enum RemoveVoteError {
+enum BadRemoveVoteRequestError {
+    #[error("Signature on signed vote request is invalid")]
+    InvalidSignature,
     #[error("Glove proxy is not assigned as a Governance proxy to the account")]
-    NotMember,
+    NotMember
+}
+
+#[derive(thiserror::Error, Debug)]
+enum RemoveVoteError {
+    #[error("Bad request: {0}")]
+    BadRequest(#[from] BadRemoveVoteRequestError),
     #[error("Internal error: {0}")]
     Internal(#[from] InternalError)
 }
@@ -616,17 +625,21 @@ impl From<ProxyError> for RemoveVoteError {
 impl IntoResponse for RemoveVoteError {
     fn into_response(self) -> Response {
         match self {
-            RemoveVoteError::NotMember => {
+            RemoveVoteError::BadRequest(error) => {
+                let error_variant = match error {
+                    BadRemoveVoteRequestError::InvalidSignature => "InvalidSignature",
+                    BadRemoveVoteRequestError::NotMember => "NotMember",
+                }.to_string();
                 (
                     StatusCode::BAD_REQUEST,
                     Json(BadRequestResponse {
-                        error: "NotMember".to_string(),
-                        description: self.to_string()
+                        error: error_variant,
+                        description: error.to_string()
                     })
                 ).into_response()
             },
             RemoveVoteError::Internal(error) => {
-                warn!("Error with remove-vote request {:?}", error);
+                warn!("Error with remove-vote request: {:?}", error);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Internal server error".to_string()

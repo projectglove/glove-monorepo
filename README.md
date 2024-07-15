@@ -147,6 +147,34 @@ will do so at the appropriate time.
 If there was something wrong with the vote request then a `400 Bad Request` is returned with a JSON object containing 
 the error type (`error`) and description (`description`).
 
+## `POST /remove-vote`
+
+Submit a signed remove vote request for removing a previously submitted vote.
+
+### Request
+
+A JSON object with the following fields:
+
+#### `request`
+
+[SCALE-encoded](https://docs.substrate.io/reference/scale-codec/) [`RemoveVoteRequest`](client-interface/src/lib.rs#374)
+struct as a hex string (without the `0x` prefix).
+
+#### `signature`
+
+[SCALE-encoded](https://docs.substrate.io/reference/scale-codec/)
+[`MultiSignature`](https://docs.rs/sp-runtime/latest/sp_runtime/enum.MultiSignature.html) as a hex string (without the
+`0x` prefix). Signed by`RemoveVoteRequest.account`, the signature is of the `RemoveVoteRequest` in SCALE-encoded bytes,
+i.e. the `request` field without the hex-encoding.
+
+### Response
+
+An empty response with `200 OK` status code is returned if the previous vote was successfully removed or if there was
+no matching vote.
+
+If there was something wrong with the request itself then a `400 Bad Request` is returned with a JSON object containing
+the error type (`error`) and description (`description`).
+
 # Client CLI
 
 There is a CLI client for interacting with the Glove service from the command line. It is built alonside the Glove

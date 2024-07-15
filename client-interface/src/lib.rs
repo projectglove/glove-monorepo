@@ -5,10 +5,11 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use parity_scale_codec::Decode;
+use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use serde::{Deserialize, Serialize};
 use sp_core::crypto::AccountId32;
-use sp_runtime::MultiAddress;
+use sp_runtime::{MultiAddress, MultiSignature};
+use sp_runtime::traits::Verify;
 use ss58_registry::{Ss58AddressFormat, Ss58AddressFormatRegistry, Token};
 use subxt::Error as SubxtError;
 use subxt::ext::scale_decode::DecodeAsType;
@@ -355,7 +356,21 @@ pub struct ServiceInfo {
     pub attestation_bundle: AttestationBundle
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Encode, Decode, MaxEncodedLen)]
+pub struct SignedRemoveVoteRequest {
+    #[serde(with = "common::serde_over_hex_scale")]
+    pub request: RemoveVoteRequest,
+    #[serde(with = "common::serde_over_hex_scale")]
+    pub signature: MultiSignature
+}
+
+impl SignedRemoveVoteRequest {
+    pub fn verify(&self) -> bool {
+        self.signature.verify(&*self.request.encode(), &self.request.account)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
 pub struct RemoveVoteRequest {
     pub account: AccountId32,
     pub poll_index: u32

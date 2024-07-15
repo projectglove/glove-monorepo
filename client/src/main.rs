@@ -14,14 +14,14 @@ use subxt::Error::Runtime;
 use subxt_signer::sr25519::Keypair;
 
 use client::{Error, try_verify_glove_result};
-use client_interface::{account_to_subxt_multi_address, is_glove_member};
+use client_interface::{account_to_subxt_multi_address, is_glove_member, SignedRemoveVoteRequest};
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::Duplicate;
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::NotFound;
 use client_interface::metadata::runtime_types::polkadot_runtime::{ProxyType, RuntimeError};
 use client_interface::RemoveVoteRequest;
 use client_interface::ServiceInfo;
 use client_interface::SubstrateNetwork;
-use common::{attestation, Conviction, VoteDirection, SignedVoteRequest, VoteRequest};
+use common::{attestation, Conviction, SignedVoteRequest, VoteDirection, VoteRequest};
 use common::attestation::{Attestation, EnclaveInfo};
 use RuntimeError::Proxy;
 
@@ -174,13 +174,18 @@ async fn remove_vote(
     network: &SubstrateNetwork,
     poll_index: u32
 ) -> Result<SuccessOutput> {
-    let remove_vote_request = RemoveVoteRequest {
+    let request = RemoveVoteRequest {
         account: network.account(),
         poll_index
     };
+    let signature = MultiSignature::Sr25519(network.account_key.sign(&request.encode()).0.into());
+    let signed_request = SignedRemoveVoteRequest { request, signature };
+    if !signed_request.verify() {
+        bail!("Something has gone wrong with the signature")
+    }
     let response = http_client
         .post(url_with_path(glove_url, "remove-vote"))
-        .json(&remove_vote_request)
+        .json(&signed_request)
         .send().await
         .context("Unable to send remove vote request")?;
     if response.status() == StatusCode::OK {
