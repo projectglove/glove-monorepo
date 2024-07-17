@@ -1,6 +1,8 @@
 [package]
 name = "service"
-version = "0.1.0"
+homepage.workspace = true
+repository.workspace = true
+version.workspace = true
 edition = "2021"
 
 [dependencies]
@@ -23,7 +25,6 @@ parity-scale-codec.workspace = true
 tempfile.workspace = true
 cfg-if.workspace = true
 serde.workspace = true
-serde_with.workspace = true
 reqwest.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

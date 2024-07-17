@@ -2,6 +2,7 @@ use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::bail;
 use axum::extract::{Json, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -22,7 +23,7 @@ use tracing::log::warn;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
 use attestation::Error::InsecureMode;
-use client_interface::{account, is_glove_member, ProxyError, ServiceInfo, SignedRemoveVoteRequest, SubstrateNetwork};
+use client_interface::{account, CallableSubstrateNetwork, is_glove_member, ProxyError, ServiceInfo, SignedRemoveVoteRequest, subscan};
 use client_interface::account_to_subxt_multi_address;
 use client_interface::BatchError;
 use client_interface::metadata::runtime_types::frame_system::pallet::Call as SystemCall;
@@ -38,7 +39,7 @@ use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError::P
 use common::{AssignedBalance, attestation, BASE_AYE, BASE_NAY, Conviction, GloveResult, SignedGloveResult, SignedVoteRequest, VoteDirection};
 use common::attestation::{AttestationBundle, AttestationBundleLocation, GloveProofLite};
 use RuntimeError::ConvictionVoting;
-use service::{GloveState, mixing, Poll, subscan};
+use service::{GloveState, mixing, Poll};
 use service::enclave::EnclaveHandle;
 
 #[derive(Parser, Debug)]
@@ -95,7 +96,6 @@ enum EnclaveMode {
 
 // TODO Permantely ban accounts which vote directly
 // TODO Endpoint for poll end time and other info?
-// TODO Update client to make it easy to verify on-chain vote
 // TODO No more votes after on-chain votes
 
 #[tokio::main]
@@ -111,12 +111,21 @@ async fn main() -> anyhow::Result<()> {
 
     let enclave_handle = initialize_enclave(args.enclave_mode).await?;
 
-    let network = SubstrateNetwork::connect(args.node_endpoint, args.proxy_secret_phrase).await?;
+    let network = CallableSubstrateNetwork::connect(
+        args.node_endpoint.clone(),
+        args.proxy_secret_phrase
+    ).await?;
     debug!("Connected: {:?}", network);
 
     let attestation_bundle = enclave_handle.send_receive::<AttestationBundle>(
         &network.api.genesis_hash()
     ).await?;
+
+    if attestation_bundle.attested_data.version != env!("CARGO_PKG_VERSION") {
+        bail!("Version mismatch with enclave. Expected {:?}, got {:?}",
+            env!("CARGO_PKG_VERSION"), attestation_bundle.attested_data.version);
+    }
+
     // Just double-check everything is OK. A failure here prevents invalid Glove proofs from being
     // submitted on-chain.
     match attestation_bundle.verify() {
@@ -128,6 +137,7 @@ async fn main() -> anyhow::Result<()> {
         enclave_handle,
         attestation_bundle,
         network,
+        node_endpoint: args.node_endpoint,
         state: GloveState::default()
     });
 
@@ -149,9 +159,10 @@ async fn main() -> anyhow::Result<()> {
 /// Start a background task which polls for Glove violators and removes them.
 fn start_background_checker(context: Arc<GloveContext>) {
     spawn(async move {
+        let http_client = reqwest::Client::builder().build().unwrap();
         loop {
             trace!("Checking for Glove violators...");
-            if let Err(error) = context.remove_glove_violators().await {
+            if let Err(error) = context.remove_glove_violators(&http_client).await {
                 warn!("Error when checking for Glove violators: {:?}", error)
             }
             sleep(Duration::from_secs(60)).await
@@ -197,8 +208,9 @@ async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
     Json(ServiceInfo {
         proxy_account: context.network.account(),
         network_name: context.network.network_name.clone(),
-        node_endpoint: context.network.url.clone(),
-        attestation_bundle: context.attestation_bundle.clone()
+        node_endpoint: context.node_endpoint.clone(),
+        attestation_bundle: context.attestation_bundle.clone(),
+        version: env!("CARGO_PKG_VERSION").to_string()
     })
 }
 
@@ -442,7 +454,7 @@ async fn submit_attestation_bundle_location_on_chain(
 }
 
 async fn proxy_remove_vote(
-    network: &SubstrateNetwork,
+    network: &CallableSubstrateNetwork,
     account: AccountId32,
     poll_index: u32
 ) -> Result<(), ProxyError> {
@@ -464,13 +476,14 @@ async fn proxy_remove_vote(
 struct GloveContext {
     enclave_handle: EnclaveHandle,
     attestation_bundle: AttestationBundle,
-    network: SubstrateNetwork,
+    network: CallableSubstrateNetwork,
+    node_endpoint: String,
     state: GloveState
 }
 
 impl GloveContext {
     /// Check for voters who have voted outside of Glove and remove them.
-    async fn remove_glove_violators(&self) -> anyhow::Result<()> {
+    async fn remove_glove_violators(&self, http_client: &reqwest::Client) -> anyhow::Result<()> {
         let mut polls_need_mixing = Vec::new();
 
         for poll in self.state.get_polls() {
@@ -480,7 +493,7 @@ impl GloveContext {
                 self.state.remove_poll(poll.index);
                 continue;
             }
-            for non_glove_voter in self.non_glove_voters(poll.index).await? {
+            for non_glove_voter in self.non_glove_voters(http_client, poll.index).await? {
                 // Remove the voter from the poll if they have submitted a Glove vote
                 let initiate_mix = match poll.remove_vote_request(&non_glove_voter).await {
                     Some(initiate_mix) => {
@@ -504,13 +517,25 @@ impl GloveContext {
         Ok(())
     }
 
-    async fn non_glove_voters(&self, poll_index: u32) -> anyhow::Result<Vec<AccountId32>> {
+    async fn non_glove_voters(
+        &self,
+        http_client: &reqwest::Client,
+        poll_index: u32
+    ) -> anyhow::Result<Vec<AccountId32>> {
         let mut voters = Vec::new();
-        for vote in subscan::get_votes(&self.network, poll_index).await? {
-            let extrinsic_account = self.network.get_extrinsic(vote.extrinsic_index).await?
-                .as_ref()
-                .and_then(account);
-            if extrinsic_account != Some(self.network.account()) {
+        let votes = subscan::get_votes(
+            http_client,
+            &self.network.network_name,
+            poll_index,
+            None
+        ).await?;
+        for vote in votes {
+            let Some(extrinsic) = self.network.get_extrinsic(vote.extrinsic_index).await? else {
+                warn!("Extrinsic referenced by subscan not found: {:?}", vote);
+                continue;
+            };
+            let extrinsic_account = account(&extrinsic);
+            if extrinsic_account.is_some() && extrinsic_account.unwrap() != self.network.account() {
                 // The vote wasn't cast by the Glove proxy
                 voters.push(vote.account.address);
             }

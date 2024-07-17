@@ -3,20 +3,19 @@ use serde_with::DisplayFromStr;
 use serde_with::serde_as;
 use sp_runtime::AccountId32;
 
-use client_interface::SubstrateNetwork;
 use common::ExtrinsicLocation;
 
 pub async fn get_votes(
-    network: &SubstrateNetwork,
-    poll_index: u32
+    http_client: &reqwest::Client,
+    network_name: &str,
+    poll_index: u32,
+    account: Option<AccountId32>
 ) -> Result<Vec<ConvictionVote>, reqwest::Error> {
-    let url = format!("https://{}.api.subscan.io/api/scan/referenda/votes", network.network_name);
-    let http_client = reqwest::Client::new();
-
     let mut all_votes = Vec::new();
 
     let mut request = Request {
         referendum_index: poll_index,
+        account,
         valid: Valid::Valid,
         row: 100,
         page: 0,
@@ -24,7 +23,7 @@ pub async fn get_votes(
 
     loop {
         let response = http_client
-            .post(&url)
+            .post(&format!("https://{}.api.subscan.io/api/scan/referenda/votes", network_name))
             .json(&request)
             .send().await?
             .json::<Response>().await?;
@@ -41,6 +40,7 @@ pub async fn get_votes(
 #[derive(Debug, Clone, Serialize)]
 struct Request {
     referendum_index: u32,
+    account: Option<AccountId32>,
     valid: Valid,
     page: u32,
     row: u8,

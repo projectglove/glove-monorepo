@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use parity_scale_codec::{Decode, DecodeAll, Encode, MaxEncodedLen};
+use parity_scale_codec::{Decode, DecodeAll, Encode};
 use parity_scale_codec::Error as ScaleError;
 use serde_bytes::ByteBuf;
 use sha2::{Digest, Sha256};
@@ -20,25 +20,18 @@ pub struct GloveProof {
 }
 
 impl GloveProof {
-    pub fn verify_components(
-        signed_result: &SignedGloveResult,
-        attestation_bundle: &AttestationBundle
-    ) -> Result<EnclaveInfo, Error> {
+    pub fn verify(&self) -> Result<EnclaveInfo, Error> {
         // If the attestation bundle is valid, then it means the signing key contained within it is
         // from a genuine secure enclave.
-        let enclave_info = attestation_bundle.verify()?;
+        let enclave_info = self.attestation_bundle.verify()?;
         // If the signature in the Gkove proof is valid, then it means the result was produced by
         // the enclave.
         let valid = <ed25519::Pair as Pair>::verify(
-            &signed_result.signature,
-            signed_result.result.encode(),
-            &attestation_bundle.attested_data.signing_key
+            &self.signed_result.signature,
+            self.signed_result.result.encode(),
+            &self.attestation_bundle.attested_data.signing_key
         );
         valid.then_some(enclave_info).ok_or(Error::GloveProof)
-    }
-
-    pub fn verify(&self) -> Result<EnclaveInfo, Error> {
-        Self::verify_components(&self.signed_result, &self.attestation_bundle)
     }
 }
 
@@ -105,12 +98,15 @@ impl AttestationBundle {
 }
 
 /// The attested data that is signed by the enclave.
-#[derive(Debug, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct AttestedData {
     /// The genesis hash of the chain the enclave is working on.
     pub genesis_hash: H256,
     /// The signing key the enclave is using to sign Glove proofs.
-    pub signing_key: ed25519::Public
+    pub signing_key: ed25519::Public,
+    /// The version string of enclave code. Used to pinpoint the exact enclave code in the Glove
+    /// repository.
+    pub version: String
 }
 
 /// Enum of the various attestation types.
@@ -214,25 +210,25 @@ mod tests {
         assert_eq!(
             glove_proof_lite.signed_result.result,
             GloveResult {
-                poll_index: 185,
+                poll_index: 186,
                 direction: VoteDirection::Nay,
                 assigned_balances: vec![
                     AssignedBalance {
                         account: AccountId32::from_str("28836d6f19d5cd8dd8b26da754c63ae337c6f938a7dc6a12e439ad8a1c69fb0d").unwrap(),
-                        nonce: 2023548734,
-                        balance: 1076669561362,
+                        nonce: 2085265314,
+                        balance: 1013266383298,
                         conviction: Conviction::None
                     },
                     AssignedBalance {
                         account: AccountId32::from_str("841f65d84a0ffa95b378923a0d879f188d2a4aa5cb0f97df84fb296788cb6e3e").unwrap(),
-                        nonce: 3199040729,
-                        balance: 7314891365174,
+                        nonce: 458657513,
+                        balance: 7645384086569,
                         conviction: Conviction::Locked1x
                     },
                     AssignedBalance {
                         account: AccountId32::from_str("ca22927dff5da60838b78763a2b5ebdf080fa4f35bcbfc8c36b3b6c59a85cd6f").unwrap(),
-                        nonce:  2821157402,
-                        balance: 3447529073464,
+                        nonce:  3781275530,
+                        balance: 3180439530133,
                         conviction: Conviction::Locked3x
                     }
                 ]
@@ -242,7 +238,7 @@ mod tests {
         assert_eq!(
             glove_proof_lite.attestation_location,
             AttestationBundleLocation::SubstrateRemark(ExtrinsicLocation {
-                block_number: 11256762,
+                block_number: 11361675,
                 extrinsic_index: 2
             })
         );
@@ -290,7 +286,8 @@ mod tests {
         let attestation_bundle = AttestationBundle {
             attested_data: AttestedData {
                 genesis_hash: Default::default(),
-                signing_key: ed25519::Pair::generate().0.public()
+                signing_key: ed25519::Pair::generate().0.public(),
+                version: "1.0.0".to_string()
             },
             attestation: Mock
         };
@@ -302,7 +299,8 @@ mod tests {
         let attestation_bundle = AttestationBundle {
             attested_data: AttestedData {
                 genesis_hash: Default::default(),
-                signing_key: ed25519::Pair::generate().0.public()
+                signing_key: ed25519::Pair::generate().0.public(),
+                version: "1.0.0".to_string()
             },
             attestation: Nitro(nitro::Attestation::try_from(RAW_NITRO_ATTESTATION_DOC_BYTES).unwrap())
         };

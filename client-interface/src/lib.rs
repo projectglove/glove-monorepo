@@ -1,6 +1,7 @@
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
+use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -38,6 +39,7 @@ use metadata::utility::events::BatchInterrupted;
 
 #[subxt::subxt(runtime_metadata_path = "../assets/polkadot-metadata.scale")]
 pub mod metadata {}
+pub mod subscan;
 
 pub type OnlineClient = subxt::OnlineClient<PolkadotConfig>;
 pub type Block = subxt::blocks::Block<PolkadotConfig, OnlineClient>;
@@ -58,44 +60,30 @@ pub type ReferendumStatus = metadata::runtime_types::pallet_referenda::types::Re
 
 #[derive(Clone)]
 pub struct SubstrateNetwork {
-    pub url: String,
     pub api: OnlineClient,
     pub network_name: String,
-    pub token_decimals: u8,
-    pub account_key: sr25519::Keypair,
-    submit_lock: Arc<Mutex<()>>
+    pub token: Token,
 }
 
 impl SubstrateNetwork {
-    pub async fn connect(url: String, account_key: sr25519::Keypair) -> Result<Self> {
-        let api = OnlineClient::from_url(url.clone()).await
+    pub async fn connect(url: String) -> Result<Self> {
+        let api = OnlineClient::from_url(url).await
             .with_context(|| "Unable to connect to network endpoint:")?;
         let ss58_address_format = api.constants()
             .at(&metadata::constants().system().ss58_prefix())
             .map(Ss58AddressFormat::custom)?;
-        let ss58_address_format_registry = Ss58AddressFormatRegistry::try_from(ss58_address_format)
-            .with_context(|| "Unable to determine network SS58 format")?;
         let mut network_name = ss58_address_format.to_string();
         if network_name == "substrate" {
             // For some reason Rococo is mapped to the generic "Substrate" network name.
             network_name = "rococo".to_string();
         }
-        let token_decimals = ss58_address_format_registry.tokens()
+        let token = Ss58AddressFormatRegistry::try_from(ss58_address_format)
+            .with_context(|| "Unable to determine network SS58 format")?
+            .tokens()
             .first()
-            .map(|token_registry| Token::from(*token_registry).decimals)
-            .unwrap_or(12);
-        Ok(Self {
-            url,
-            api,
-            network_name,
-            token_decimals,
-            account_key,
-            submit_lock: Arc::default()
-        })
-    }
-
-    pub fn account(&self) -> AccountId32 {
-        self.account_key.public_key().0.into()
+            .map(|token_registry| Token::from(*token_registry))
+            .unwrap_or_else(|| Token { name: "ROC", decimals: 12 });
+        Ok(Self { api, network_name, token })
     }
 
     pub async fn get_block(&self, block_number: u32) -> Result<Option<Block>, SubxtError> {
@@ -120,39 +108,6 @@ impl SubstrateNetwork {
             .iter()
             .nth(location.extrinsic_index as usize)
             .transpose()
-    }
-
-    pub async fn call_extrinsic<Call: Payload>(
-        &self,
-        payload: &Call
-    ) -> Result<(ExtrinsicEvents, ExtrinsicLocation), SubxtError> {
-        // Submitting concurrent extrinsics causes problems with the nonce
-        let guard = self.submit_lock.lock().await;
-        let tx_in_block = self.api.tx()
-            .sign_and_submit_then_watch_default(payload, &self.account_key).await?
-            .wait_for_finalized().await?;
-        // Unlock here as it's now OK for another thread to submit an extrinsic
-        drop(guard);
-        let events = tx_in_block.wait_for_success().await?;
-        let location = ExtrinsicLocation {
-            block_number: self.api.blocks().at(tx_in_block.block_hash()).await?.number(),
-            extrinsic_index: events.extrinsic_index()
-        };
-        Ok((events, location))
-    }
-
-    pub async fn batch(&self, calls: Vec<RuntimeCall>) -> Result<ExtrinsicEvents, BatchError> {
-        let payload = metadata::tx().utility().batch(calls).unvalidated();
-        let (events, _) = self.call_extrinsic(&payload).await?;
-        if let Some(batch_interrupted) = events.find_first::<BatchInterrupted>()? {
-            let runtime_error = self.extract_runtime_error(&batch_interrupted.error);
-            return if let Some(runtime_error) = runtime_error {
-                Err(BatchError::Module(batch_interrupted.index as usize, runtime_error))
-            } else {
-                Err(BatchError::Dispatch(batch_interrupted))
-            }
-        }
-        Ok(events)
     }
 
     /// This is the equivalent to calling [subxt::error::DispatchError::decode_from] followed by
@@ -255,9 +210,76 @@ impl SubstrateNetwork {
 impl Debug for SubstrateNetwork {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("SubstrateNetwork")
-            .field("url", &self.url)
             .field("network_name", &self.network_name)
-            .field("token_decimals", &self.token_decimals)
+            .field("token", &self.token)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+pub struct CallableSubstrateNetwork {
+    pub network: SubstrateNetwork,
+    pub account_key: sr25519::Keypair,
+    submit_lock: Arc<Mutex<()>>
+}
+
+impl CallableSubstrateNetwork {
+    pub async fn connect(url: String, account_key: sr25519::Keypair) -> Result<Self> {
+        let network = SubstrateNetwork::connect(url).await?;
+        Ok(Self { network, account_key, submit_lock: Arc::default() })
+    }
+
+    pub fn account(&self) -> AccountId32 {
+        self.account_key.public_key().0.into()
+    }
+
+    pub async fn call_extrinsic<Call: Payload>(
+        &self,
+        payload: &Call
+    ) -> Result<(ExtrinsicEvents, ExtrinsicLocation), SubxtError> {
+        // Submitting concurrent extrinsics causes problems with the nonce
+        let guard = self.submit_lock.lock().await;
+        let tx_in_block = self.api.tx()
+            .sign_and_submit_then_watch_default(payload, &self.account_key).await?
+            .wait_for_finalized().await?;
+        // Unlock here as it's now OK for another thread to submit an extrinsic
+        drop(guard);
+        let events = tx_in_block.wait_for_success().await?;
+        let location = ExtrinsicLocation {
+            block_number: self.api.blocks().at(tx_in_block.block_hash()).await?.number(),
+            extrinsic_index: events.extrinsic_index()
+        };
+        Ok((events, location))
+    }
+
+    pub async fn batch(&self, calls: Vec<RuntimeCall>) -> Result<ExtrinsicEvents, BatchError> {
+        let payload = metadata::tx().utility().batch(calls).unvalidated();
+        let (events, _) = self.call_extrinsic(&payload).await?;
+        if let Some(batch_interrupted) = events.find_first::<BatchInterrupted>()? {
+            let runtime_error = self.extract_runtime_error(&batch_interrupted.error);
+            return if let Some(runtime_error) = runtime_error {
+                Err(BatchError::Module(batch_interrupted.index as usize, runtime_error))
+            } else {
+                Err(BatchError::Dispatch(batch_interrupted))
+            }
+        }
+        Ok(events)
+    }
+}
+
+impl Deref for CallableSubstrateNetwork {
+    type Target = SubstrateNetwork;
+
+    fn deref(&self) -> &Self::Target {
+        &self.network
+    }
+}
+
+impl Debug for CallableSubstrateNetwork {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CallableSubstrateNetwork")
+            .field("network_name", &self.network_name)
+            .field("token", &self.token)
             .field("account", &self.account())
             .finish()
     }
@@ -353,7 +375,8 @@ pub struct ServiceInfo {
     pub network_name: String,
     pub node_endpoint: String,
     #[serde(with = "common::serde_over_hex_scale")]
-    pub attestation_bundle: AttestationBundle
+    pub attestation_bundle: AttestationBundle,
+    pub version: String
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Encode, Decode, MaxEncodedLen)]
@@ -402,9 +425,11 @@ mod tests {
                 attested_data: AttestedData {
                     genesis_hash: random::<[u8; 32]>().into(),
                     signing_key: ed25519::Pair::generate().0.public(),
+                    version: "1.0.0".to_string()
                 },
                 attestation: Attestation::Mock
-            }
+            },
+            version: "1.0.0".to_string()
         };
 
         let json = serde_json::to_string(&service_info).unwrap();
@@ -416,7 +441,8 @@ mod tests {
                 "proxy_account": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
                 "network_name": "polkadot",
                 "node_endpoint": "wss://polkadot.api.onfinality.io/public-ws",
-                "attestation_bundle": hex::encode(&service_info.attestation_bundle.encode())
+                "attestation_bundle": hex::encode(&service_info.attestation_bundle.encode()),
+                "version": "1.0.0"
             })
         );
 

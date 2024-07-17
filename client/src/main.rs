@@ -1,7 +1,7 @@
 use std::process::{ExitCode, Termination};
 
-use anyhow::{bail, Context, Result};
-use bigdecimal::{BigDecimal, RoundingMode, ToPrimitive};
+use anyhow::{anyhow, bail, Context, Result};
+use bigdecimal::{BigDecimal, ToPrimitive};
 use clap::{Parser, Subcommand};
 use DispatchError::Module;
 use reqwest::{Client, StatusCode, Url};
@@ -14,14 +14,15 @@ use subxt::Error::Runtime;
 use subxt_signer::sr25519::Keypair;
 
 use client::{Error, try_verify_glove_result};
-use client_interface::{account_to_subxt_multi_address, is_glove_member, SignedRemoveVoteRequest};
+use client_interface::{account_to_subxt_multi_address, CallableSubstrateNetwork, is_glove_member, SignedRemoveVoteRequest, subscan, SubstrateNetwork};
+use client_interface::metadata::referenda::storage::types::referendum_info_for::ReferendumInfoFor;
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::Duplicate;
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::NotFound;
 use client_interface::metadata::runtime_types::polkadot_runtime::{ProxyType, RuntimeError};
 use client_interface::RemoveVoteRequest;
 use client_interface::ServiceInfo;
-use client_interface::SubstrateNetwork;
-use common::{attestation, Conviction, SignedVoteRequest, VoteDirection, VoteRequest};
+use Command::{Info, JoinGlove, LeaveGlove, RemoveVote, VerifyVote, Vote};
+use common::{attestation, Conviction, SignedVoteRequest, VoteRequest};
 use common::attestation::{Attestation, EnclaveInfo};
 use RuntimeError::Proxy;
 
@@ -37,32 +38,19 @@ async fn main() -> Result<SuccessOutput> {
         .error_for_status()?
         .json::<ServiceInfo>().await?;
 
-    let network = SubstrateNetwork::connect(
-        service_info.node_endpoint.clone(),
-        args.secret_phrase
-    ).await?;
-
     match args.command {
-        Command::JoinGlove => {
-            join_glove(&service_info, &network).await
-        }
-        Command::Vote(vote_cmd) => {
-            vote(&args.glove_url, &http_client, &network, vote_cmd, &service_info.proxy_account).await
-        },
-        Command::RemoveVote { poll_index } => {
-            remove_vote(&args.glove_url, &http_client, &network, poll_index).await
-        },
-        Command::LeaveGlove => {
-            leave_glove(&service_info, &network).await
-        }
-        Command::Info => {
-            info(&service_info)
-        }
+        JoinGlove(cmd) => join_glove(service_info, cmd).await,
+        Vote(cmd) => vote(service_info, cmd, args.glove_url, http_client).await,
+        RemoveVote(cmd) => remove_vote(service_info, cmd, args.glove_url, http_client).await,
+        VerifyVote(cmd) => verify_vote(service_info, cmd, http_client).await,
+        LeaveGlove(cmd) => leave_glove(service_info, cmd).await,
+        Info => info(service_info)
     }
 }
 
-async fn join_glove(service_info: &ServiceInfo, network: &SubstrateNetwork) -> Result<SuccessOutput> {
-    if is_glove_member(network, network.account(), service_info.proxy_account.clone()).await? {
+async fn join_glove(service_info: ServiceInfo, cmd: JoinCmd) -> Result<SuccessOutput> {
+    let network = cmd.secret_phrase_args.connect_to_network(&service_info).await?;
+    if is_glove_member(&network, network.account(), service_info.proxy_account.clone()).await? {
         return Ok(SuccessOutput::AlreadyGloveMember);
     }
     let add_proxy_call = client_interface::metadata::tx()
@@ -83,22 +71,22 @@ async fn join_glove(service_info: &ServiceInfo, network: &SubstrateNetwork) -> R
 }
 
 async fn vote(
-    glove_url: &Url,
-    http_client: &Client,
-    network: &SubstrateNetwork,
-    vote_cmd: VoteCmd,
-    proxy_account: &AccountId32
+    service_info: ServiceInfo,
+    cmd: VoteCmd,
+    glove_url: Url,
+    http_client: Client,
 ) -> Result<SuccessOutput> {
-    let balance = (&vote_cmd.balance * 10u128.pow(network.token_decimals as u32))
+    let network = cmd.secret_phrase_args.connect_to_network(&service_info).await?;
+    let balance = (&cmd.balance * 10u128.pow(network.token.decimals as u32))
         .to_u128()
         .context("Vote balance is too big")?;
     let request = VoteRequest::new(
         network.account(),
         network.api.genesis_hash(),
-        vote_cmd.poll_index,
-        vote_cmd.aye,
+        cmd.poll_index,
+        cmd.aye,
         balance,
-        parse_conviction(vote_cmd.conviction)?
+        cmd.parse_conviction()?
     );
     let nonce = request.nonce;
 
@@ -108,7 +96,7 @@ async fn vote(
         bail!("Something has gone wrong with the signature")
     }
     let response = http_client
-        .post(url_with_path(glove_url, "vote"))
+        .post(url_with_path(&glove_url, "vote"))
         .json(&signed_request)
         .send().await
         .context("Unable to send vote request")?;
@@ -116,15 +104,15 @@ async fn vote(
     if response.status() != StatusCode::OK {
         bail!(response.text().await?)
     }
-    if vote_cmd.await_glove_confirmation {
-        listen_for_glove_votes(network, &vote_cmd, nonce, proxy_account).await?;
+    if cmd.await_glove_proof {
+        listen_for_glove_votes(&network, &cmd, nonce, &service_info.proxy_account).await?;
     }
     return Ok(SuccessOutput::Voted { nonce });
 }
 
 // TODO Stop waiting when the poll is closed.
 async fn listen_for_glove_votes(
-    network: &SubstrateNetwork,
+    network: &CallableSubstrateNetwork,
     vote_cmd: &VoteCmd,
     nonce: u32,
     proxy_account: &AccountId32
@@ -146,15 +134,8 @@ async fn listen_for_glove_votes(
             }
         };
         if let Some(balance) = verified_glove_proof.get_vote_balance(&network.account(), nonce) {
-            let balance = BigDecimal::new(
-                balance.into(),
-                network.token_decimals as i64
-            ).with_scale_round(3, RoundingMode::HalfEven);
-            match verified_glove_proof.result.direction {
-                VoteDirection::Aye => println!("Glove vote aye with balance {}", balance),
-                VoteDirection::Nay => println!("Glove vote nay with balance {}", balance),
-                VoteDirection::Abstain => println!("Glove abstained with balance {}", balance),
-            }
+            println!("Glove vote {:?} with balance {}",
+                     verified_glove_proof.result.direction, network.token.amount(balance));
             if let Some(_) = &verified_glove_proof.enclave_info {
                 // TODO Check measurement
             } else {
@@ -169,14 +150,15 @@ async fn listen_for_glove_votes(
 }
 
 async fn remove_vote(
-    glove_url: &Url,
-    http_client: &Client,
-    network: &SubstrateNetwork,
-    poll_index: u32
+    service_info: ServiceInfo,
+    cmd: RemoveVoteCmd,
+    glove_url: Url,
+    http_client: Client,
 ) -> Result<SuccessOutput> {
+    let network = cmd.secret_phrase_args.connect_to_network(&service_info).await?;
     let request = RemoveVoteRequest {
         account: network.account(),
-        poll_index
+        poll_index: cmd.poll_index
     };
     let signature = MultiSignature::Sr25519(network.account_key.sign(&request.encode()).0.into());
     let signed_request = SignedRemoveVoteRequest { request, signature };
@@ -184,7 +166,7 @@ async fn remove_vote(
         bail!("Something has gone wrong with the signature")
     }
     let response = http_client
-        .post(url_with_path(glove_url, "remove-vote"))
+        .post(url_with_path(&glove_url, "remove-vote"))
         .json(&signed_request)
         .send().await
         .context("Unable to send remove vote request")?;
@@ -195,8 +177,95 @@ async fn remove_vote(
     }
 }
 
-async fn leave_glove(service_info: &ServiceInfo, network: &SubstrateNetwork) -> Result<SuccessOutput> {
-    if !is_glove_member(network, network.account(), service_info.proxy_account.clone()).await? {
+async fn verify_vote(
+    service_info: ServiceInfo,
+    cmd: VerifyVoteCmd,
+    http_client: Client
+) -> Result<SuccessOutput> {
+    let network = SubstrateNetwork::connect(service_info.node_endpoint).await?;
+    let Some(poll_info) = network.get_poll(cmd.poll_index).await? else {
+        bail!("Poll does not exist")
+    };
+    let votes = subscan::get_votes(
+        &http_client,
+        &service_info.network_name,
+        cmd.poll_index,
+        Some(cmd.account.clone())
+    ).await?;
+    let Some(vote) = votes.first() else {
+        if matches!(poll_info, ReferendumInfoFor::Ongoing(_)) {
+            bail!("Glove proxy has not voted yet")
+        } else {
+            bail!("Poll is no longer active and Glove proxy did not vote")
+        }
+    };
+    let Some(extrinsic) = network.get_extrinsic(vote.extrinsic_index).await? else {
+        bail!("Unable to find vote extrinsic at {}", vote.extrinsic_index)
+    };
+    let verification_result = try_verify_glove_result(
+        &network,
+        &extrinsic,
+        &service_info.proxy_account,
+        cmd.poll_index
+    ).await;
+    let verified_glove_proof = match verification_result {
+        Ok(Some(verified_glove_proof)) => verified_glove_proof,
+        Ok(None) => bail!("Vote was not cast by Glove proxy"),
+        Err(error) => bail!("Glove proof failed verification: {}", error)
+    };
+    let assigned_balance = verified_glove_proof
+        .get_assigned_balance(&cmd.account)
+        .ok_or_else(|| anyhow!("Account is not in Glove proof"))?;
+    let image_measurement = match verified_glove_proof.enclave_info {
+        Some(EnclaveInfo::Nitro(nitro_enclave_info)) => nitro_enclave_info.image_measurement,
+        None => bail!("INSECURE enclave was used to mix votes, so result cannot be trusted")
+    };
+
+    if let Some(nonce) = cmd.nonce {
+        if nonce != assigned_balance.nonce {
+            bail!("Nonce in Glove proof ({}) does not match expected value. \
+            Glove proxy has used an older vote request.", assigned_balance.nonce)
+        }
+    } else {
+        eprintln!("Nonce was not provided so cannot check if most recent vote request was used by \
+        Glove proxy");
+    }
+
+    if !cmd.enclave_measurement.is_empty() {
+        let enclave_match = cmd.enclave_measurement
+            .iter()
+            .any(|str| hex::decode(str).ok() == Some(image_measurement.clone()));
+        if !enclave_match {
+            bail!("Unknown enclave encountered in Glove proof ({})",
+                hex::encode(&image_measurement))
+        }
+        println!("Vote mixed by VERIFIED Glove enclave: {:?} with {} and conviction {:?}",
+                 verified_glove_proof.result.direction,
+                 network.token.amount(assigned_balance.balance),
+                 assigned_balance.conviction);
+    } else {
+        println!("Vote mixed by POSSIBLE Glove enclave ({}): {:?} with {} and conviction {:?}",
+                 hex::encode(&image_measurement),
+                 verified_glove_proof.result.direction,
+                 network.token.amount(assigned_balance.balance),
+                 assigned_balance.conviction);
+        println!();
+        println!("To verify this is a Glove enclave, first audit the code:");
+        println!("git clone --depth 1 --branch v{} {}",
+                 verified_glove_proof.attested_data.version,
+                 env!("CARGO_PKG_REPOSITORY"));
+        println!();
+        println!("And then verify 'PCR0' output is '{}':", hex::encode(&image_measurement));
+        println!("./build.sh");
+    }
+
+    Ok(SuccessOutput::None)
+}
+
+// TODO Also remove any active votes, which requires a remove-all-votes request?
+async fn leave_glove(service_info: ServiceInfo, cmd: LeaveCmd) -> Result<SuccessOutput> {
+    let network = cmd.secret_phrase_args.connect_to_network(&service_info).await?;
+    if !is_glove_member(&network, network.account(), service_info.proxy_account.clone()).await? {
         return Ok(SuccessOutput::NotGloveMember);
     }
     let add_proxy_call = client_interface::metadata::tx()
@@ -216,7 +285,7 @@ async fn leave_glove(service_info: &ServiceInfo, network: &SubstrateNetwork) -> 
     }
 }
 
-fn info(service_info: &ServiceInfo) -> Result<SuccessOutput> {
+fn info(service_info: ServiceInfo) -> Result<SuccessOutput> {
     let ab = &service_info.attestation_bundle;
     let enclave_info = match ab.verify() {
         Ok(EnclaveInfo::Nitro(enclave_info)) => {
@@ -246,78 +315,128 @@ fn url_with_path(url: &Url, path: &str) -> Url {
 #[derive(Debug, Parser)]
 #[command(version, about = "Glove CLI client")]
 struct Args {
-    /// The secret phrase for the Glove client account. This is a secret seed with optional
-    /// derivation paths. An Sr25519 key will be derived from this for signing.
-    ///
-    /// See https://wiki.polkadot.network/docs/learn-account-advanced#derivation-paths for more
-    /// details.
-    #[arg(long, value_parser = client_interface::parse_secret_phrase)]
-    secret_phrase: Keypair,
-
     /// The URL of the Glove service
-    #[arg(long)]
+    #[arg(long, short)]
     glove_url: Url,
 
     #[clap(subcommand)]
     command: Command,
 }
 
+#[derive(Debug, Clone, clap::Args)]
+struct SecretPhraseArgs {
+    /// The secret phrase for the Glove client account. This is a secret seed with optional
+    /// derivation paths. An Sr25519 key will be derived from this for signing.
+    ///
+    /// See https://wiki.polkadot.network/docs/learn-account-advanced#derivation-paths for more
+    /// details.
+    #[arg(long, value_parser = client_interface::parse_secret_phrase)]
+    secret_phrase: Keypair
+}
+
+impl SecretPhraseArgs {
+    async fn connect_to_network(
+        &self,
+        service_info: &ServiceInfo
+    ) -> Result<CallableSubstrateNetwork> {
+        CallableSubstrateNetwork::connect(
+            service_info.node_endpoint.clone(),
+            self.secret_phrase.clone()
+        ).await
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Add Glove as a goverance proxy to the account, if it isn't already.
-    JoinGlove,
-
+    JoinGlove(JoinCmd),
     /// Submit vote for inclusion in Glove mixing. The mixing process is not necessarily immediate.
     /// Voting on the same poll twice will replace the previous vote.
     Vote(VoteCmd),
-
     /// Remove a previously submitted vote.
-    RemoveVote {
-        #[arg(long)]
-        poll_index: u32
-    },
-
-    // TODO Also remove any active votes, which requires a remove-all-votes request?
+    RemoveVote(RemoveVoteCmd),
+    /// Verify on-chain vote was mixed by a genuine Glove enclave
+    VerifyVote(VerifyVoteCmd),
     /// Remove the account from the Glove proxy.
-    LeaveGlove,
-
+    LeaveGlove(LeaveCmd),
     /// Print information about the Glove service.
     Info
+}
 
-    // TODO Command to resume waiting for Glove vote, based on stored nonce. It will first check
-    //  storage to see if the vote has already been mixed, and then continue listening. If the poll
-    //  is closed then it should verify the vote was mixed by Glove and then exit.
+#[derive(Debug, Parser)]
+struct JoinCmd {
+    #[command(flatten)]
+    secret_phrase_args: SecretPhraseArgs
 }
 
 #[derive(Debug, Parser)]
 struct VoteCmd {
-    #[arg(long)]
+    #[command(flatten)]
+    secret_phrase_args: SecretPhraseArgs,
+    #[arg(long, short)]
     poll_index: u32,
     /// Specify this to vote "aye", ommit to vote "nay"
     #[arg(long)]
     aye: bool,
     /// The amount of tokens to lock for the vote (as a decimal in the major token unit)
-    #[arg(long)]
+    #[arg(long, short)]
     balance: BigDecimal,
     /// The vote conviction multiplier
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, short, default_value_t = 0)]
     conviction: u8,
     /// Wait for the vote to be included in the Glove mixing process and confirmation received.
-    #[arg(long)]
-    await_glove_confirmation: bool
+    #[arg(long, short)]
+    await_glove_proof: bool
 }
 
-fn parse_conviction(value: u8) -> Result<Conviction> {
-    match value {
-        0 => Ok(Conviction::None),
-        1 => Ok(Conviction::Locked1x),
-        2 => Ok(Conviction::Locked2x),
-        3 => Ok(Conviction::Locked3x),
-        4 => Ok(Conviction::Locked4x),
-        5 => Ok(Conviction::Locked5x),
-        6 => Ok(Conviction::Locked6x),
-        _ => bail!("Conviction must be between 0 and 6 inclusive")
+impl VoteCmd {
+    fn parse_conviction(&self) -> Result<Conviction> {
+        match self.conviction {
+            0 => Ok(Conviction::None),
+            1 => Ok(Conviction::Locked1x),
+            2 => Ok(Conviction::Locked2x),
+            3 => Ok(Conviction::Locked3x),
+            4 => Ok(Conviction::Locked4x),
+            5 => Ok(Conviction::Locked5x),
+            6 => Ok(Conviction::Locked6x),
+            _ => bail!("Conviction must be between 0 and 6 inclusive")
+        }
     }
+}
+
+#[derive(Debug, Parser)]
+struct RemoveVoteCmd {
+    #[command(flatten)]
+    secret_phrase_args: SecretPhraseArgs,
+    #[arg(long, short)]
+    poll_index: u32
+}
+
+#[derive(Debug, Parser)]
+struct VerifyVoteCmd {
+    /// The account on whose behalf the Glove proxy mixed the vote
+    #[arg(long, short)]
+    account: AccountId32,
+    /// The index of the poll/referendum
+    #[arg(long, short)]
+    poll_index: u32,
+    /// Whitelisted Glove enclave measurements. Each measurement represents a different enclave
+    /// version. The on-chain Glove proof associated with the vote will be checked against this list.
+    /// It is assumed the versions of the enclave these measurement represent have been audited.
+    ///
+    /// If no enclave measurement is specified, the measurement of the Glove proof will displayed,
+    /// along with enclave code location, for auditing.
+    #[arg(long, short)]
+    enclave_measurement: Vec<String>,
+    /// Optional, the nonce value used in the most recent vote request.
+    #[arg(long, short)]
+    nonce: Option<u32>
+}
+
+#[derive(Debug, Parser)]
+struct LeaveCmd {
+    #[command(flatten)]
+    secret_phrase_args: SecretPhraseArgs
 }
 
 #[derive(Display, Debug, PartialEq)]

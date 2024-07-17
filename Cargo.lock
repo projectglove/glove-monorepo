@@ -892,7 +892,7 @@ checksum = "4b82cf0babdbd58558212896d1a4272303a57bdb245c2bf1147185fb45640e70"
 
 [[package]]
 name = "client"
-version = "0.1.0"
+version = "0.0.4"
 dependencies = [
  "anyhow",
  "bigdecimal",
@@ -903,6 +903,7 @@ dependencies = [
  "reqwest",
  "sp-core 33.0.1",
  "sp-runtime 37.0.0",
+ "ss58-registry",
  "strum",
  "subxt",
  "subxt-core",
@@ -913,15 +914,17 @@ dependencies = [
 
 [[package]]
 name = "client-interface"
-version = "0.1.0"
+version = "0.0.4"
 dependencies = [
  "anyhow",
  "common",
  "hex",
  "parity-scale-codec",
  "rand",
+ "reqwest",
  "serde",
  "serde_json",
+ "serde_with",
  "sp-core 33.0.1",
  "sp-runtime 37.0.0",
  "ss58-registry",
@@ -940,7 +943,7 @@ checksum = "0b6a852b24ab71dffc585bcb46eaf7959d175cb865a7152e35b348d1b2960422"
 
 [[package]]
 name = "common"
-version = "0.1.0"
+version = "0.0.4"
 dependencies = [
  "aws-nitro-enclaves-cose",
  "aws-nitro-enclaves-nsm-api",
@@ -1477,7 +1480,7 @@ dependencies = [
 
 [[package]]
 name = "enclave"
-version = "0.1.0"
+version = "0.0.4"
 dependencies = [
  "anyhow",
  "aws-nitro-enclaves-nsm-api",
@@ -1499,7 +1502,7 @@ dependencies = [
 
 [[package]]
 name = "enclave-interface"
-version = "0.1.0"
+version = "0.0.4"
 dependencies = [
  "common",
  "nix 0.27.1",
@@ -4258,7 +4261,7 @@ dependencies = [
 
 [[package]]
 name = "service"
-version = "0.1.0"
+version = "0.0.4"
 dependencies = [
  "anyhow",
  "axum",
@@ -4272,7 +4275,6 @@ dependencies = [
  "parity-scale-codec",
  "reqwest",
  "serde",
- "serde_with",
  "sp-runtime 37.0.0",
  "subxt",
  "subxt-signer",

@@ -1,6 +1,8 @@
 [package]
 name = "client"
-version = "0.1.0"
+homepage.workspace = true
+repository.workspace = true
+version.workspace = true
 edition = "2021"
 
 [dependencies]
@@ -19,3 +21,4 @@ sp-core.workspace = true
 sp-runtime.workspace = true
 thiserror.workspace = true
 hex.workspace = true
+ss58-registry.workspace = true

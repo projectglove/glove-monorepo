@@ -1,7 +1,9 @@
 [package]
 name = "common"
 description = "Common types and utilities used by all three components: service, client, and enclave."
-version = "0.1.0"
+homepage.workspace = true
+repository.workspace = true
+version.workspace = true
 edition = "2021"
 
 [dependencies]
