@@ -55,7 +55,8 @@ jobs:
 
       - name: Run Ansible
         uses: dawidd6/action-ansible-playbook@v2
-        playbook: glove.yml
-        directory: devops/ansible
-        keys: {{ secret.SSH_PRIVATE_KEY }}
+        with:
+          playbook: glove.yml
+          directory: devops/ansible
+          keys: {{ secret.SSH_PRIVATE_KEY }}
 
