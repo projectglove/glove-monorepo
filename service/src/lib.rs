@@ -11,7 +11,6 @@ use common::attestation::AttestationBundleLocation;
 use common::SignedVoteRequest;
 
 pub mod enclave;
-pub mod subscan;
 pub mod mixing;
 
 #[derive(Default)]

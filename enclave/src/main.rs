@@ -31,7 +31,8 @@ async fn main() -> anyhow::Result<()> {
     let (signing_pair, _) = ed25519::Pair::generate();
     let attested_data = AttestedData {
         genesis_hash,
-        signing_key: signing_pair.public()
+        signing_key: signing_pair.public(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
     };
 
     cfg_if! {

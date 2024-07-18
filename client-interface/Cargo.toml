@@ -1,7 +1,9 @@
 [package]
 name = "client-interface"
 description = "Interface between the client and service"
-version = "0.1.0"
+homepage.workspace = true
+repository.workspace = true
+version.workspace = true
 edition = "2021"
 
 [dependencies]
@@ -17,6 +19,8 @@ thiserror.workspace = true
 serde.workspace = true
 parity-scale-codec.workspace = true
 tokio = { workspace = true, features = ["sync"] }
+serde_with.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

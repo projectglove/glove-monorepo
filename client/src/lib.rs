@@ -16,17 +16,27 @@ use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeCall::Co
 use client_interface::metadata::system::calls::types::Remark;
 use client_interface::metadata::utility::calls::types::Batch;
 use common::{AssignedBalance, attestation, BASE_AYE, Conviction, ExtrinsicLocation, GloveResult, VoteDirection};
-use common::attestation::{AttestationBundle, AttestationBundleLocation, GloveProof, GloveProofLite};
+use common::attestation::{AttestationBundle, AttestationBundleLocation, AttestedData, GloveProof, GloveProofLite};
 use runtime_types::pallet_conviction_voting::vote::Vote;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct VerifiedGloveProof {
     pub result: GloveResult,
+    /// If `None` then enclave was running in insecure mode.
     pub enclave_info: Option<EnclaveInfo>,
+    pub attested_data: AttestedData
 }
 
 // TODO API for checking EnclaveInfo for expected measurements
 impl VerifiedGloveProof {
+    pub fn get_assigned_balance(&self, account: &AccountId32) -> Option<AssignedBalance> {
+        self.result
+            .assigned_balances
+            .iter()
+            .find(|assigned_balance| assigned_balance.account == *account)
+            .cloned()
+    }
+
     pub fn get_vote_balance(&self, account: &AccountId32, nonce: u32) -> Option<u128> {
         self.result
             .assigned_balances
@@ -82,20 +92,21 @@ pub async fn try_verify_glove_result(
         return Err(Error::ChainMismatch);
     }
 
-    let glove_verification_result = GloveProof::verify_components(
-        &glove_proof_lite.signed_result,
-        &attestation_bundle
-    );
+    let glove_proof = GloveProof {
+        signed_result: glove_proof_lite.signed_result,
+        attestation_bundle
+    };
 
-    let enclave_info = match glove_verification_result {
+    let enclave_info = match glove_proof.verify() {
         Ok(enclave_info) => Some(enclave_info),
         Err(attestation::Error::InsecureMode) => None,
         Err(error) => return Err(error.into())
     };
 
     Ok(Some(VerifiedGloveProof {
-        result: glove_proof_lite.signed_result.result,
-        enclave_info
+        result: glove_proof.signed_result.result,
+        enclave_info,
+        attested_data: glove_proof.attestation_bundle.attested_data
     }))
 }
 

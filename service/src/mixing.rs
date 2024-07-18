@@ -1,6 +1,6 @@
 use std::io;
 
-use tracing::{debug};
+use tracing::debug;
 use tracing::log::warn;
 
 use common::{attestation, SignedGloveResult, SignedVoteRequest};
@@ -26,7 +26,11 @@ pub async fn mix_votes_in_enclave(
                 debug!("  {:?}", assigned_balance);
             }
             // Double-check things all line up before committing on-chain
-            match GloveProof::verify_components(&signed_result, &attestation_bundle) {
+            let proof = GloveProof {
+                signed_result: signed_result.clone(),
+                attestation_bundle: attestation_bundle.clone()
+            };
+            match proof.verify() {
                 Ok(_) => debug!("Glove proof verified"),
                 Err(InsecureMode) => warn!("Glove proof from insecure enclave"),
                 Err(error) => return Err(error.into())

@@ -1,3 +1,11 @@
+**Table of Contents**
+
+- [Building Glove](#building-glove)
+- [Verifying Glove votes](#verifying-glove-votes)
+- [Running the Glove service](#running-the-glove-service)
+- [REST API](#rest-api)
+- [Client CLI](#client-cli)
+
 # Building Glove
 
 You will need an x86-64 machine with docker installed to build Glove:
@@ -14,21 +22,30 @@ Enclave Image successfully created.
 {
   "Measurements": {
     "HashAlgorithm": "Sha384 { ... }",
-    "PCR0": "d68be77c357668869010a6c56a7d2248e47128eb4aa19f4063bd3edafc075826873661a8dc0ce86321a3eb32274d093a",
+    "PCR0": "3b4c1662314f1ed3e571bcdc884489041353566b6437c5b0aa8a2a564f2e5dd4b66cffe1b605d50e5dbbfe9e74b084fc",
 ...
   }
 }
 ```
 
-If you're using a Glove service and want to confirm it's genuine, build the same version of the enclave they are 
-claiming to use and verify you get the same image measurement that's in the Glove attestation. A match proves they are
-running a Glove enclave on genuine AWS Nitro hardware.
+# Verifying Glove votes
+
+If you're using a Glove service and want to confirm the on-chain vote was mixed from a genuine Glove enclave, run the
+following command:
+
+```shell
+target/release/client --glove-url=<GLOVE SERVICE URL> verify-vote --account=<GLOVE CLIENT ACCOUNT> --poll-index=<POLL INDEX> --enclave-measurement=<EXPECTED ENCLAVE MEASUREMENT>
+```
+
+`enclave-measurement` is the expected _audited_ Glove enclave identity. If this is not known then run the command
+without it, and if the client determines the vote was mixed by a _potential_ Glove enclave it will print out
+instructions on how to audit and verify the enclave code.
 
 > [!NOTE]
-> The enclave image measurement for the latest build is
-> `d68be77c357668869010a6c56a7d2248e47128eb4aa19f4063bd3edafc075826873661a8dc0ce86321a3eb32274d093a`.
+> The enclave measurement for the latest build is
+> `3b4c1662314f1ed3e571bcdc884489041353566b6437c5b0aa8a2a564f2e5dd4b66cffe1b605d50e5dbbfe9e74b084fc`.
 
-# Running Glove
+# Running the Glove service
 
 If you want to run your own Glove service, you will need to have a compatible AWS EC2 instance with AWS Nitro Enclaves
 enabled. You can follow the instructions [here](https://docs.aws.amazon.com/enclaves/latest/user/getting-started.html#launch-instance)
@@ -56,7 +73,8 @@ If the enclave fails to start or you want to view its logs, start the service wi
 start the enclave in debug mode and output to the console.
 
 > [!WARNING]
-> Debug mode is not secure and will be reflected in the enclave's remote attestation. Do not enable this in production.
+> Debug mode is not secure and will be reflected in the enclave's remote attestation and any Glove proofs created. Do
+> not enable this in production.
 
 # REST API
 
@@ -92,11 +110,15 @@ it points to the same network.
 #### `attestation_bundle`
 
 The attestation bundle of the enclave the service is using. This is a hex-encoded string (without the `0x` prefix),
-representing the [`AttestationBundle`](common/src/attestation.rs#L43) struct in
+representing the [`AttestationBundle`](common/src/attestation.rs#L45) struct in
 [SCALE](https://docs.substrate.io/reference/scale-codec/) encoding. 
 
 The attestation bundle is primarily used in Glove proofs when the enclave submits its mixed votes on-chain. It's
 available here for clients to verify the enclave's identity before submitting any votes.
+
+#### `version`
+
+The version of the Glove service.
 
 #### Example
 
@@ -105,7 +127,8 @@ available here for clients to verify the enclave's identity before submitting an
   "proxy_account": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
   "network_name": "rococo",
   "node_endpoint": "wss://rococo-rpc.polkadot.io",
-  "attestation_bundle": "6408de7737c59c238890533af25896a2c20608d8b380bb01029acb3927..."
+  "attestation_bundle": "6408de7737c59c238890533af25896a2c20608d8b380bb01029acb3927...",
+  "version": "0.0.4"
 }
 ```
 
@@ -157,7 +180,7 @@ A JSON object with the following fields:
 
 #### `request`
 
-[SCALE-encoded](https://docs.substrate.io/reference/scale-codec/) [`RemoveVoteRequest`](client-interface/src/lib.rs#374)
+[SCALE-encoded](https://docs.substrate.io/reference/scale-codec/) [`RemoveVoteRequest`](client-interface/src/lib.rs#L374)
 struct as a hex string (without the `0x` prefix).
 
 #### `signature`

@@ -2,6 +2,11 @@
 members = [ "common", "service", "enclave", "enclave-interface", "client", "client-interface" ]
 resolver = "2"
 
+[workspace.package]
+homepage = "https://projectglove.io/"
+repository = "https://github.com/projectglove/glove-monorepo/"
+version = "0.0.4"
+
 [workspace.dependencies]
 anyhow = "1.0.86"
 rand = "0.8.5"
@@ -23,7 +28,6 @@ clap = { version = "4.5.4", features = ["derive"] }
 tokio = { version = "1.37.0" }
 reqwest = { version = "0.12.4", features = ["json"] }
 strum = { version = "0.26.2", features = ["derive"] }
-base64 = "0.22.1"
 axum = "0.7.5"
 itertools = "0.13.0"
 tower-http = { version = "0.5.2", features = ["trace"] }
