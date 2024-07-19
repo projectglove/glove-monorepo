@@ -1,13 +1,13 @@
 +name: Test
-+
-+on:
-+  push:
-+    branch:
-+      - "one-more-fix"
-+
-+env:
-+  CARGO_TERM_COLOR: always
-+
+
+on:
+  push:
+    branch:
+      - "one-more-fix"
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   build:
     runs-on: ubuntu-latest
