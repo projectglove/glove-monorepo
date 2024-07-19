@@ -24,4 +24,4 @@ jobs:
           chmod 600 key
           ls -l
           ssh-keygen -y -f key
-          ssh -o "StrictHostKeyChecking=no" -i key ec2-user@52.14.26.216
+          ssh -o "StrictHostKeyChecking=no" -i key -vvv ec2-user@52.14.26.216
