@@ -1,0 +1,23 @@
++name: Test
++
++on:
++  push:
++    branch:
++      - "one-more-fix"
++
++env:
++  CARGO_TERM_COLOR: always
++
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Release
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - shell: bash
+        env:
+          SECRET: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          echo "$SECRET" >> key
+          ssh -i key ec2-user@52.14.26.216
