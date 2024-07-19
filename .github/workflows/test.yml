@@ -22,4 +22,5 @@ jobs:
         run: |
           echo "$SECRET" > key
           ls -l
+          ssh-keygen -y -f key
           ssh -o "StrictHostKeyChecking=no" -i key ec2-user@52.14.26.216
