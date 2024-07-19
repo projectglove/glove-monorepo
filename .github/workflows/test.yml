@@ -25,4 +25,4 @@ jobs:
           ls -l
           ssh-keygen -y -f key
           dig +short myip.opendns.com @resolver1.opendns.com
-          ssh -o "StrictHostKeyChecking=no" -i key -vvv ec2-user@52.14.26.216 ls
+          ssh -o "StrictHostKeyChecking=no" -i key -vvv -l ec2-user 52.14.26.216 ls
