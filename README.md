@@ -5,6 +5,7 @@
 - [Running the Glove service](#running-the-glove-service)
 - [REST API](#rest-api)
 - [Client CLI](#client-cli)
+- [Deployment](#deployment)
 
 # Building Glove
 
@@ -69,7 +70,7 @@ You can check the enclave is running with:
 nitro-cli describe-enclaves
 ```
 
-If the enclave fails to start or you want to view its logs, start the service with `--enclave-mode=debug` which will 
+If the enclave fails to start or you want to view its logs, start the service with `--enclave-mode=debug` which will
 start the enclave in debug mode and output to the console.
 
 > [!WARNING]
@@ -111,7 +112,7 @@ it points to the same network.
 
 The attestation bundle of the enclave the service is using. This is a hex-encoded string (without the `0x` prefix),
 representing the [`AttestationBundle`](common/src/attestation.rs#L45) struct in
-[SCALE](https://docs.substrate.io/reference/scale-codec/) encoding. 
+[SCALE](https://docs.substrate.io/reference/scale-codec/) encoding.
 
 The attestation bundle is primarily used in Glove proofs when the enclave submits its mixed votes on-chain. It's
 available here for clients to verify the enclave's identity before submitting any votes.
@@ -136,7 +137,7 @@ The version of the Glove service.
 
 Submit a signed vote request to be included in the Glove mixing process.
 
-Multiple votes can be submitted for the same poll, but it's up to the discrection of the Glove service to accept them.
+Multiple votes can be submitted for the same poll, but it's up to the discretion of the Glove service to accept them.
 If they are accepted they will replace the previous vote for that poll.
 
 ### Request
@@ -145,7 +146,7 @@ A JSON object with the following fields:
 
 #### `request`
 
-[SCALE-encoded](https://docs.substrate.io/reference/scale-codec/) [`VoteRequest`](common/src/lib.rs#L36) struct as a 
+[SCALE-encoded](https://docs.substrate.io/reference/scale-codec/) [`VoteRequest`](common/src/lib.rs#L36) struct as a
 hex string (without the `0x` prefix).
 
 #### `signature`
@@ -167,7 +168,7 @@ If the vote request was successfully received and accepted by the service then a
 code is returned. This does not mean, however, the vote was mixed and submitted on-chain; just that the Glove service
 will do so at the appropriate time.
 
-If there was something wrong with the vote request then a `400 Bad Request` is returned with a JSON object containing 
+If there was something wrong with the vote request then a `400 Bad Request` is returned with a JSON object containing
 the error type (`error`) and description (`description`).
 
 ## `POST /remove-vote`
@@ -200,7 +201,7 @@ the error type (`error`) and description (`description`).
 
 # Client CLI
 
-There is a CLI client for interacting with the Glove service from the command line. It is built alonside the Glove
+There is a CLI client for interacting with the Glove service from the command line. It is built alongside the Glove
 service and enclave with the `./build.sh` command (described above). To build it on a local machine:
 
 ```shell
@@ -232,3 +233,28 @@ Then run this in the home directory of this project:
 ```shell
 subxt metadata --url="wss://rpc.polkadot.io:443" -f bytes > assets/polkadot-metadata.scale
 ```
+
+# Deployment
+
+Additionally, to the Enclave source code the repo contain examples of the Configuration as Code scripts.
+The are located in the [devops](devops) folder.
+Cloud infrastructure is handled by Terraform/OpenTofu and VM configuration by Ansible.
+
+## Terraform/OpenTofu
+The scripts in the [terraform](devops/terraform) subfolder are responsible for deployment of:
+- VM with Enclave,
+- Application Load Balancer (ALB),
+- DNS entries,
+- SSL certificate for a test system,
+- and matching Security Groups (SG).
+
+Please note, that in the test TLS traffic terminates on the load balancer, not VM.
+
+## Ansible
+In the [Ansible](devops/ansible) folder there is the glove role and the matching playbook with an inventory file for the test deployment.
+The role gets the latest binaries from the github, release page, sets systemd service for glove API host and prepare Nitro enclave.
+
+## GitHub Actions
+
+The ansible playbook and the role are used in the release GHA.
+Every time a new tag is set, the action builds binaries, and then uses Ansible to update the test deployment.
