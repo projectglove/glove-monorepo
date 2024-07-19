@@ -25,4 +25,20 @@ jobs:
           ls -l
           ssh-keygen -y -f key
           dig +short myip.opendns.com @resolver1.opendns.com
-          ssh -o "StrictHostKeyChecking=no" -i key -vvv -l ec2-user 52.14.26.216 ls
+          #          ssh -o "StrictHostKeyChecking=no" -i key -vvv -l ec2-user 52.14.26.216 ls
+
+      - name: Install Ansible
+        run: |
+          sudo apt update
+          sudo apt install software-properties-common
+          sudo add-apt-repository --yes --update ppa:ansible/ansible
+          sudo apt install ansible
+
+      - name: Run Ansible
+        uses: dawidd6/action-ansible-playbook@v2
+        with:
+          playbook: glove.yml
+          directory: devops/ansible
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          options: |
+            --inventory hosts.ini
