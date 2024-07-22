@@ -58,5 +58,6 @@ jobs:
         with:
           playbook: glove.yml
           directory: devops/ansible
-          key: ${{ secret.SSH_PRIVATE_KEY }}
-
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          options: |
+            --inventory hosts.ini

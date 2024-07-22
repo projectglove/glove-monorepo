@@ -1,6 +1,6 @@
 resource "aws_key_pair" "deployer" {
   key_name   = "deployer-key"
-  public_key = file("~/.ssh/id_ed25519.pub")
+  public_key = file("~/.ssh/glove.pub")
 }
 
 resource "aws_instance" "enclave" {
