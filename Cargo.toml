@@ -5,7 +5,7 @@ resolver = "2"
 [workspace.package]
 homepage = "https://projectglove.io/"
 repository = "https://github.com/projectglove/glove-monorepo/"
-version = "0.0.4"
+version = "0.0.5"
 
 [workspace.dependencies]
 anyhow = "1.0.86"
@@ -43,3 +43,5 @@ openssl = "0.10.64"
 hex = "0.4.3"
 sha2 = "0.10.8"
 flate2 = "1.0.30"
+aws-config = "1.5.4"
+aws-sdk-dynamodb = "1.38.0"

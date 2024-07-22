@@ -26,6 +26,8 @@ tempfile.workspace = true
 cfg-if.workspace = true
 serde.workspace = true
 reqwest.workspace = true
+aws-config.workspace = true
+aws-sdk-dynamodb.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-vsock.workspace = true
