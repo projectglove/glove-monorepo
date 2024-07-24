@@ -316,7 +316,7 @@ fn url_with_path(url: &Url, path: &str) -> Url {
 #[command(version, about = "Glove CLI client")]
 struct Args {
     /// The URL of the Glove service
-    #[arg(long, short)]
+    #[arg(long, short, verbatim_doc_comment)]
     glove_url: Url,
 
     #[clap(subcommand)]
@@ -330,7 +330,7 @@ struct SecretPhraseArgs {
     ///
     /// See https://wiki.polkadot.network/docs/learn-account-advanced#derivation-paths for more
     /// details.
-    #[arg(long, value_parser = client_interface::parse_secret_phrase)]
+    #[arg(long, verbatim_doc_comment, value_parser = client_interface::parse_secret_phrase)]
     secret_phrase: Keypair
 }
 
@@ -349,17 +349,23 @@ impl SecretPhraseArgs {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Add Glove as a goverance proxy to the account, if it isn't already.
+    #[command(verbatim_doc_comment)]
     JoinGlove(JoinCmd),
     /// Submit vote for inclusion in Glove mixing. The mixing process is not necessarily immediate.
     /// Voting on the same poll twice will replace the previous vote.
+    #[command(verbatim_doc_comment)]
     Vote(VoteCmd),
     /// Remove a previously submitted vote.
+    #[command(verbatim_doc_comment)]
     RemoveVote(RemoveVoteCmd),
     /// Verify on-chain vote was mixed by a genuine Glove enclave
+    #[command(verbatim_doc_comment)]
     VerifyVote(VerifyVoteCmd),
     /// Remove the account from the Glove proxy.
+    #[command(verbatim_doc_comment)]
     LeaveGlove(LeaveCmd),
     /// Print information about the Glove service.
+    #[command(verbatim_doc_comment)]
     Info
 }
 
@@ -376,16 +382,16 @@ struct VoteCmd {
     #[arg(long, short)]
     poll_index: u32,
     /// Specify this to vote "aye", ommit to vote "nay"
-    #[arg(long)]
+    #[arg(long, verbatim_doc_comment)]
     aye: bool,
     /// The amount of tokens to lock for the vote (as a decimal in the major token unit)
-    #[arg(long, short)]
+    #[arg(long, short, verbatim_doc_comment)]
     balance: BigDecimal,
     /// The vote conviction multiplier
-    #[arg(long, short, default_value_t = 0)]
+    #[arg(long, short, verbatim_doc_comment, default_value_t = 0)]
     conviction: u8,
     /// Wait for the vote to be included in the Glove mixing process and confirmation received.
-    #[arg(long, short)]
+    #[arg(long, short, verbatim_doc_comment)]
     await_glove_proof: bool
 }
 
@@ -415,21 +421,22 @@ struct RemoveVoteCmd {
 #[derive(Debug, Parser)]
 struct VerifyVoteCmd {
     /// The account on whose behalf the Glove proxy mixed the vote
-    #[arg(long, short)]
+    #[arg(long, short, verbatim_doc_comment)]
     account: AccountId32,
     /// The index of the poll/referendum
-    #[arg(long, short)]
+    #[arg(long, short, verbatim_doc_comment)]
     poll_index: u32,
     /// Whitelisted Glove enclave measurements. Each measurement represents a different enclave
-    /// version. The on-chain Glove proof associated with the vote will be checked against this list.
-    /// It is assumed the versions of the enclave these measurement represent have been audited.
+    /// version. The on-chain Glove proof associated with the vote will be checked against this
+    /// list. It is assumed the versions of the enclave these measurement represent have been
+    /// audited.
     ///
     /// If no enclave measurement is specified, the measurement of the Glove proof will displayed,
     /// along with enclave code location, for auditing.
-    #[arg(long, short)]
+    #[arg(long, short, verbatim_doc_comment)]
     enclave_measurement: Vec<String>,
     /// Optional, the nonce value used in the most recent vote request.
-    #[arg(long, short)]
+    #[arg(long, short, verbatim_doc_comment)]
     nonce: Option<u32>
 }
 

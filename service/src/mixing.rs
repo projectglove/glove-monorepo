@@ -9,6 +9,7 @@ use common::attestation::Error::InsecureMode;
 use enclave_interface::{EnclaveRequest, EnclaveResponse};
 
 use crate::enclave::EnclaveHandle;
+use crate::storage;
 
 pub async fn mix_votes_in_enclave(
     enclave_handle: &EnclaveHandle,
@@ -51,5 +52,7 @@ pub enum Error {
     #[error("Enclave error: {0}")]
     Enclave(#[from] enclave_interface::Error),
     #[error("Enclave attestation error: {0}")]
-    Attestation(#[from] attestation::Error)
+    Attestation(#[from] attestation::Error),
+    #[error("Storage error: {0}")]
+    Storage(#[from] storage::Error)
 }

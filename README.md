@@ -54,11 +54,14 @@ to provision the correct EC2 instance. Make sure to use x86-64, with the Nitro E
 Then install the [Nitro Enclaves CLI](https://docs.aws.amazon.com/enclaves/latest/user/nitro-enclave-cli-install.html).
 Make sure to allocate at least 512 MiB for the enclave.
 
-Make sure the `service` binary and the `glove.eif` files are in the same directory. If you built using `build.sh` they
+You will also need to create a DynamoDB table for the service. The table must have a sort key, and both partition and
+sort keys must be strings. Make sure to attach an IAM role to the EC2 instance which gives it write access to the table.
+
+Make sure the `service` binary and the `glove.eif` file are in the same directory. If you built using `build.sh` they
 will both be in `target/release`:
 
 ```shell
-target/release/service --address=<LISTEN> --proxy-secret-phrase=<SECRET PHRASE> --node-endpoint=<URL>
+target/release/service --address=<LISTEN> --proxy-secret-phrase=<SECRET PHRASE> --node-endpoint=<URL> dynamodb --table-name=<GLOVE TABLE>
 ```
 
 To understand what these arguments mean and others, you will need to first read the help with `--help`.

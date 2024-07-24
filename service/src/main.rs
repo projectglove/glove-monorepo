@@ -1,21 +1,25 @@
+use std::collections::HashSet;
+use std::error::Error;
+use std::future::Future;
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::bail;
+use anyhow::{bail, Context};
 use axum::extract::{Json, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use axum::routing::{get, post};
 use cfg_if::cfg_if;
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use sp_runtime::AccountId32;
 use subxt::Error as SubxtError;
 use subxt_signer::sr25519::Keypair;
 use tokio::net::TcpListener;
 use tokio::spawn;
+use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, trace};
@@ -28,7 +32,7 @@ use client_interface::account_to_subxt_multi_address;
 use client_interface::BatchError;
 use client_interface::metadata::runtime_types::frame_system::pallet::Call as SystemCall;
 use client_interface::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
-use client_interface::metadata::runtime_types::pallet_conviction_voting::pallet::Error::{InsufficientFunds, NotOngoing, NotVoter};
+use client_interface::metadata::runtime_types::pallet_conviction_voting::pallet::Error::{InsufficientFunds, NotOngoing};
 use client_interface::metadata::runtime_types::pallet_conviction_voting::vote::AccountVote;
 use client_interface::metadata::runtime_types::pallet_conviction_voting::vote::Vote;
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Call as ProxyCall;
@@ -39,8 +43,10 @@ use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError::P
 use common::{AssignedBalance, attestation, BASE_AYE, BASE_NAY, Conviction, GloveResult, SignedGloveResult, SignedVoteRequest, VoteDirection};
 use common::attestation::{AttestationBundle, AttestationBundleLocation, GloveProofLite};
 use RuntimeError::ConvictionVoting;
-use service::{GloveState, mixing, Poll};
+use service::{mixing, storage};
+use service::dynamodb::DynamodbGloveStorage;
 use service::enclave::EnclaveHandle;
+use service::storage::{GloveStorage, InMemoryGloveStorage};
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Glove proxy service")]
@@ -50,35 +56,61 @@ struct Args {
     ///
     /// See https://wiki.polkadot.network/docs/learn-account-advanced#derivation-paths for more
     /// details.
-    #[arg(long, value_parser = client_interface::parse_secret_phrase)]
+    #[arg(long, verbatim_doc_comment, value_parser = client_interface::parse_secret_phrase)]
     proxy_secret_phrase: Keypair,
 
     /// Address the service will listen on.
-    #[arg(long)]
+    #[arg(long, verbatim_doc_comment)]
     address: String,
 
     /// URL to a substrate node endpoint. The Glove service will use the API exposed by this to
     /// interact with the network.
     ///
     /// See https://wiki.polkadot.network/docs/maintain-endpoints for more information.
-    #[arg(long)]
+    #[arg(long, verbatim_doc_comment)]
     node_endpoint: String,
 
+    /// The storage to use for the service.
+    #[clap(subcommand, verbatim_doc_comment)]
+    storage: Storage,
+
     /// Which mode the Glove enclave should run in.
-    #[arg(long, value_enum, default_value_t = EnclaveMode::Nitro)]
+    #[arg(long, value_enum, verbatim_doc_comment, default_value_t = EnclaveMode::Nitro)]
     enclave_mode: EnclaveMode
 }
 
-#[derive(ValueEnum, Debug, Clone)]
+#[derive(Debug, Subcommand)]
+enum Storage {
+    /// Store all state in an AWS DynamoDB table.
+    ///
+    /// The service will need write permissions on the table. This can be achieved by attaching
+    /// the relevant IAM role to the EC2 instance running the service.
+    #[command(verbatim_doc_comment)]
+    Dynamodb {
+        /// The name of the DynamoDB table to use. The table must have a sort key, and both the
+        /// partition key and sort key must be of strings. They can both have any name.
+        #[arg(long, verbatim_doc_comment)]
+        table_name: String
+    },
+    /// Store all state in memory. This is only useful for testing and development purposes. Do not
+    /// use in production.
+    #[command(verbatim_doc_comment)]
+    InMemory
+}
+
+#[derive(Debug, Clone, ValueEnum)]
 enum EnclaveMode {
     /// Run the enclave inside a secure AWS Nitro enclave environment.
+    #[value(verbatim_doc_comment)]
     Nitro,
     /// Run the AWS Nitro enclave in debug mode. Enclave logging will be enabled. This is INSECURE
     /// and Glove proofs will be marked as such.
+    #[value(verbatim_doc_comment)]
     Debug,
     /// Run the enclave as a normal process. This is only useful for testing and development
     /// purposes as an AWS Nitro instance is not required. This is INSECURE and Glove proofs will be
     /// marked as such.
+    #[value(verbatim_doc_comment)]
     Mock
 }
 
@@ -100,7 +132,8 @@ enum EnclaveMode {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let filter = EnvFilter::try_new("subxt_core::events=info,hyper_util=info,reqwest::connect=info")?
+    let filter = EnvFilter::try_new(
+        "subxt_core::events=info,hyper_util=info,reqwest::connect=info,aws=info,hyper::proto::h1=info")?
         // Set the base level to debug
         .add_directive(LevelFilter::DEBUG.into());
     tracing_subscriber::fmt()
@@ -109,7 +142,21 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    let enclave_handle = initialize_enclave(args.enclave_mode).await?;
+    let storage = match args.storage {
+        Storage::Dynamodb { table_name } => {
+            let storage = DynamodbGloveStorage::connect(table_name).await
+                .context("Failed to connect to DynamoDB table")?;
+            info!("Connected to DynamoDB table");
+            GloveStorage::Dynamodb(storage)
+        }
+        Storage::InMemory => {
+            warn!("No DynamoDB table specified, so state will not be persisted");
+            GloveStorage::InMemory(InMemoryGloveStorage::default())
+        }
+    };
+
+    let enclave_handle = initialize_enclave(args.enclave_mode).await
+        .context("Unable to connect to enclave")?;
 
     let network = CallableSubstrateNetwork::connect(
         args.node_endpoint.clone(),
@@ -134,6 +181,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let glove_context = Arc::new(GloveContext {
+        storage,
         enclave_handle,
         attestation_bundle,
         network,
@@ -224,6 +272,7 @@ async fn vote(
 ) -> Result<(), VoteError> {
     let network = &context.network;
     let request = &signed_request.request;
+    let poll_index = request.poll_index;
 
     if !signed_request.verify() {
         return Err(BadVoteRequestError::InvalidSignature.into());
@@ -234,7 +283,7 @@ async fn vote(
     if !is_glove_member(network, request.account.clone(), network.account()).await? {
         return Err(BadVoteRequestError::NotMember.into());
     }
-    if network.get_ongoing_poll(request.poll_index).await?.is_none() {
+    if network.get_ongoing_poll(poll_index).await?.is_none() {
         return Err(BadVoteRequestError::PollNotOngoing.into());
     }
     // In a normal poll with multiple votes on both sides, the on-chain vote balance can be
@@ -244,11 +293,9 @@ async fn vote(
     if network.account_balance(request.account.clone()).await? < request.balance {
         return Err(BadVoteRequestError::InsufficientBalance.into());
     }
-    let poll = context.state.get_poll(request.poll_index);
-    let initiate_mix = poll.add_vote_request(signed_request).await;
-    if initiate_mix {
-        schedule_vote_mixing(context, poll);
-    }
+    context.storage.add_vote_request(signed_request.clone()).await?;
+    debug!("Vote request added to storage: {:?}", signed_request.request);
+    schedule_vote_mixing(context, poll_index).await;
     Ok(())
 }
 
@@ -257,54 +304,58 @@ async fn remove_vote(
     Json(signed_request): Json<SignedRemoveVoteRequest>
 ) -> Result<(), RemoveVoteError> {
     let network = &context.network;
-    let request = &signed_request.request;
-    let account = &request.account;
+    let account = &signed_request.request.account;
+    let poll_index = signed_request.request.poll_index;
+
     if !signed_request.verify() {
         return Err(BadRemoveVoteRequestError::InvalidSignature.into());
     }
     if !is_glove_member(network, account.clone(), network.account()).await? {
         return Err(BadRemoveVoteRequestError::NotMember.into());
     }
-    let Some(poll) = context.state.get_optional_poll(request.poll_index) else {
+    if !context.storage.remove_vote_request(poll_index, account).await? {
+        debug!("Vote request not found for removal: {:?}", signed_request.request);
         // Removing a non-existent vote request is a no-op
         return Ok(());
-    };
-    let Some(initiate_mix) = poll.remove_vote_request(&account).await else {
-        // Another task has already started mixing the votes
-        return Ok(());
-    };
-    let remove_result = proxy_remove_vote(network, account.clone(), request.poll_index).await;
-    match remove_result {
-        // Unlikely since we've just checked above, but just in case
-        Err(ProxyError::Module(_, ConvictionVoting(NotVoter))) => return Ok(()),
-        Err(ProxyError::Batch(BatchError::Module(_, Proxy(NotProxy)))) =>
-            return Err(BadRemoveVoteRequestError::NotMember.into()),
-        Err(error) => return Err(error.into()),
-        Ok(_) => {}
     }
-    if initiate_mix {
+    debug!("Vote request removed from storage: {:?}", signed_request.request);
+
+    spawn(async move {
+        let remove_result = proxy_remove_vote(
+            &context.network,
+            signed_request.request.account,
+            poll_index
+        ).await;
+        if let Err(error) = remove_result {
+            warn!("Error removing vote: {:?}", error);
+        }
         // TODO Only do the mixing if the votes were previously submitted on-chain
-        schedule_vote_mixing(context, poll);
-    }
+        schedule_vote_mixing(context, poll_index).await;
+    });
+
     Ok(())
 }
 
 /// Schedule a background task to mix the votes and submit them on-chain after a delay. Any voting
 //  requests which are received in the interim will be included in the mix.
-fn schedule_vote_mixing(context: Arc<GloveContext>, poll: Poll) {
-    debug!("Scheduling vote mixing for poll {}", poll.index);
+async fn schedule_vote_mixing(context: Arc<GloveContext>, poll_index: u32) {
+    if !context.state.acquire_mix_semaphore(poll_index).await {
+        debug!("Vote mixing for poll {} already scheduled", poll_index);
+        return;
+    }
+    debug!("Scheduling vote mixing for poll {}", poll_index);
     spawn(async move {
         // TODO Figure out the policy for submitting on-chain
         sleep(Duration::from_secs(10)).await;
-        mix_votes(&context, &poll).await;
+        mix_votes(&context, poll_index).await;
     });
 }
 
-async fn mix_votes(context: &GloveContext, poll: &Poll) {
+async fn mix_votes(context: &GloveContext, poll_index: u32) {
     loop {
-        match try_mix_votes(context, poll).await {
-            Ok(true) => break,
-            Ok(false) => continue,
+        match try_mix_votes(context, poll_index).await {
+            Ok(true) => continue,
+            Ok(false) => break,
             Err(mixing_error) => {
                 // TODO Reconnect on NotConnected IO error: Io(Os { code: 107, kind: NotConnected, message: "Transport endpoint is not connected" })
                 warn!("Error mixing votes: {:?}", mixing_error);
@@ -314,12 +365,15 @@ async fn mix_votes(context: &GloveContext, poll: &Poll) {
     }
 }
 
-async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, mixing::Error> {
-    info!("Mixing votes for poll {}", poll.index);
-    let Some(poll_requests) = poll.begin_mix().await else {
-        // Another task has already started mixing the votes
-        return Ok(true);
-    };
+/// Returns `true` if the mixing should be retried.
+async fn try_mix_votes(context: &GloveContext, poll_index: u32) -> Result<bool, mixing::Error> {
+    if !context.state.release_mix_semaphore(poll_index).await {
+        debug!("Vote mixing for poll {} already in progress", poll_index);
+        return Ok(false);
+    }
+
+    info!("Mixing votes for poll {}", poll_index);
+    let poll_requests = context.storage.get_poll(poll_index).await?;
 
     let signed_glove_result = mixing::mix_votes_in_enclave(
         &context.enclave_handle,
@@ -329,29 +383,29 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, mixi
 
     let result = submit_glove_result_on_chain(&context, &poll_requests, signed_glove_result).await;
     if result.is_ok() {
-        info!("Vote mixing for poll {} succeeded", poll.index);
-        return Ok(true);
+        info!("Vote mixing for poll {} succeeded", poll_index);
+        return Ok(false);
     }
 
     match result.unwrap_err() {
         ProxyError::Module(_, ConvictionVoting(NotOngoing)) => {
-            // The background thread will eventually remove the poll
-            info!("Poll {} is no longer ongoing, and will be removed", poll.index);
-            Ok(true)
+            info!("Poll {} is no longer ongoing, and will be removed", poll_index);
+            context.storage.remove_poll(poll_index).await?;
+            Ok(false)
         }
         ProxyError::Module(batch_index, ConvictionVoting(InsufficientFunds)) => {
             let request = &poll_requests[batch_index].request;
             warn!("Insufficient funds for {:?}. Removing it from poll and trying again", request);
             // TODO On-chain vote needs to be removed as well
-            poll.remove_vote_request(&request.account).await;
-            Ok(false)
+            context.storage.remove_vote_request(poll_index, &request.account).await?;
+            Ok(true)
         }
         ProxyError::Batch(BatchError::Module(batch_index, Proxy(NotProxy))) => {
             let request = &poll_requests[batch_index].request;
             warn!("Account is no longer part of Glove, removing it from poll and trying again: {:?}",
                 request);
-            poll.remove_vote_request(&request.account).await;
-            Ok(false)
+            context.storage.remove_vote_request(poll_index, &request.account).await?;
+            Ok(true)
         }
         proxy_error => {
             if let Some(batch_index) = proxy_error.batch_index() {
@@ -360,7 +414,7 @@ async fn try_mix_votes(context: &GloveContext, poll: &Poll) -> Result<bool, mixi
             } else {
                 warn!("Error submitting mixed votes: {:?}", proxy_error)
             }
-            Ok(true)
+            Ok(false)
         }
     }
 }
@@ -474,6 +528,7 @@ async fn proxy_remove_vote(
 }
 
 struct GloveContext {
+    storage: GloveStorage,
     enclave_handle: EnclaveHandle,
     attestation_bundle: AttestationBundle,
     network: CallableSubstrateNetwork,
@@ -484,34 +539,28 @@ struct GloveContext {
 impl GloveContext {
     /// Check for voters who have voted outside of Glove and remove them.
     async fn remove_glove_violators(&self, http_client: &reqwest::Client) -> anyhow::Result<()> {
-        let mut polls_need_mixing = Vec::new();
+        let mut polls_need_mixing = HashSet::new();
 
-        for poll in self.state.get_polls() {
+        for poll_index in self.storage.get_poll_indices().await? {
             // Use this opportunity to do some garbage collection and remove any expired polls
-            if self.network.get_ongoing_poll(poll.index).await?.is_none() {
-                debug!("Removing poll {} as it is no longer ongoing", poll.index);
-                self.state.remove_poll(poll.index);
+            if self.network.get_ongoing_poll(poll_index).await?.is_none() {
+                debug!("Removing poll {} as it is no longer ongoing", poll_index);
+                self.storage.remove_poll(poll_index).await?;
                 continue;
             }
-            for non_glove_voter in self.non_glove_voters(http_client, poll.index).await? {
+            for non_glove_voter in self.non_glove_voters(http_client, poll_index).await? {
                 // Remove the voter from the poll if they have submitted a Glove vote
-                let initiate_mix = match poll.remove_vote_request(&non_glove_voter).await {
-                    Some(initiate_mix) => {
-                        info!("Account {} has voted on poll {} outside of Glove and so removing them",
-                            non_glove_voter, poll.index);
-                        initiate_mix
-                    },
-                    None => false
-                };
-                if initiate_mix {
-                    polls_need_mixing.push(poll.clone());
+                if self.storage.remove_vote_request(poll_index, &non_glove_voter).await? {
+                    info!("Account {} has voted on poll {} outside of Glove and so removing them",
+                        non_glove_voter, poll_index);
+                    polls_need_mixing.insert(poll_index);
                 }
             }
         }
 
         // TODO Should only be mixed if there are on-chain votes to replace
-        for poll in polls_need_mixing {
-            mix_votes(self, &poll).await;
+        for poll_index in polls_need_mixing {
+            mix_votes(self, poll_index).await;
         }
 
         Ok(())
@@ -544,12 +593,59 @@ impl GloveContext {
     }
 }
 
+#[derive(Default)]
+struct GloveState {
+    // There may be a non-trivial cost to storing the attestation bundle location, and so it's done
+    // lazily on first poll mixing, rather than eagerly on startup.
+    abl: Mutex<Option<AttestationBundleLocation>>,
+    /// Initially `false`, this is `true` if a background task has been kicked off to mix the vote
+    /// requests and submit the results on-chain. The task will set this back to `false` once it has
+    /// started by calling [Poll::begin_mix].
+    mix_semaphore: Mutex<HashSet<u32>>
+}
+
+impl GloveState {
+    async fn attestation_bundle_location<E: Error, Fut>(
+        &self,
+        new: impl FnOnce() -> Fut
+    ) -> Result<AttestationBundleLocation, E>
+    where
+        Fut: Future<Output = Result<AttestationBundleLocation, E>>,
+    {
+        let mut abl_holder = self.abl.lock().await;
+        match &*abl_holder {
+            None => {
+                let abl = new().await?;
+                *abl_holder = Some(abl.clone());
+                Ok(abl)
+            }
+            Some(abl) => Ok(abl.clone())
+        }
+    }
+
+    async fn acquire_mix_semaphore(&self, poll_index: u32) -> bool {
+        self.mix_semaphore.lock().await.insert(poll_index)
+    }
+
+    async fn release_mix_semaphore(&self, poll_index: u32) -> bool {
+        self.mix_semaphore.lock().await.remove(&poll_index)
+    }
+}
+
 #[derive(thiserror::Error, Debug)]
 enum InternalError {
     #[error("Subxt error: {0}")]
     Subxt(#[from] SubxtError),
     #[error("Proxy error: {0}")]
-    Proxy(#[from] ProxyError)
+    Proxy(#[from] ProxyError),
+    #[error("Storage error: {0}")]
+    Storage(#[from] storage::Error),
+}
+
+#[derive(Serialize)]
+struct BadRequestResponse {
+    error: String,
+    description: String
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -586,10 +682,10 @@ impl From<ProxyError> for VoteError {
     }
 }
 
-#[derive(Serialize)]
-struct BadRequestResponse {
-    error: String,
-    description: String
+impl From<storage::Error> for VoteError {
+    fn from(error: storage::Error) -> Self {
+        VoteError::Internal(error.into())
+    }
 }
 
 impl IntoResponse for VoteError {
@@ -643,6 +739,12 @@ impl From<SubxtError> for RemoveVoteError {
 
 impl From<ProxyError> for RemoveVoteError {
     fn from(error: ProxyError) -> Self {
+        RemoveVoteError::Internal(error.into())
+    }
+}
+
+impl From<storage::Error> for RemoveVoteError {
+    fn from(error: storage::Error) -> Self {
         RemoveVoteError::Internal(error.into())
     }
 }
