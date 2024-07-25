@@ -5,7 +5,7 @@ resolver = "2"
 [workspace.package]
 homepage = "https://projectglove.io/"
 repository = "https://github.com/projectglove/glove-monorepo/"
-version = "0.0.5"
+version = "0.0.6"
 
 [workspace.dependencies]
 anyhow = "1.0.86"

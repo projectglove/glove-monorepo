@@ -1234,7 +1234,7 @@ checksum = "4b82cf0babdbd58558212896d1a4272303a57bdb245c2bf1147185fb45640e70"
 
 [[package]]
 name = "client"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "bigdecimal",
@@ -1256,7 +1256,7 @@ dependencies = [
 
 [[package]]
 name = "client-interface"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "common",
@@ -1285,7 +1285,7 @@ checksum = "0b6a852b24ab71dffc585bcb46eaf7959d175cb865a7152e35b348d1b2960422"
 
 [[package]]
 name = "common"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "aws-nitro-enclaves-cose",
  "aws-nitro-enclaves-nsm-api",
@@ -1822,7 +1822,7 @@ dependencies = [
 
 [[package]]
 name = "enclave"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "aws-nitro-enclaves-nsm-api",
@@ -1844,7 +1844,7 @@ dependencies = [
 
 [[package]]
 name = "enclave-interface"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "common",
  "nix 0.27.1",
@@ -4615,7 +4615,7 @@ dependencies = [
 
 [[package]]
 name = "service"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "aws-config",

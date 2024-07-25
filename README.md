@@ -2,6 +2,7 @@
 
 - [Building Glove](#building-glove)
 - [Verifying Glove votes](#verifying-glove-votes)
+- [Glove mixing](#glove-mixing)
 - [Running the Glove service](#running-the-glove-service)
 - [REST API](#rest-api)
 - [Client CLI](#client-cli)
@@ -22,7 +23,7 @@ Enclave Image successfully created.
 {
   "Measurements": {
     "HashAlgorithm": "Sha384 { ... }",
-    "PCR0": "3b4c1662314f1ed3e571bcdc884489041353566b6437c5b0aa8a2a564f2e5dd4b66cffe1b605d50e5dbbfe9e74b084fc",
+    "PCR0": "2c655d5ba7f35e9e5208aff0670b9bee257cd9994cb957100fd8c9b4aa693a1d1c67f430d28c4f62a5372fe96d417d29",
 ...
   }
 }
@@ -43,7 +44,46 @@ instructions on how to audit and verify the enclave code.
 
 > [!NOTE]
 > The enclave measurement for the latest build is
-> `3b4c1662314f1ed3e571bcdc884489041353566b6437c5b0aa8a2a564f2e5dd4b66cffe1b605d50e5dbbfe9e74b084fc`.
+> `2c655d5ba7f35e9e5208aff0670b9bee257cd9994cb957100fd8c9b4aa693a1d1c67f430d28c4f62a5372fe96d417d29`.
+
+# Glove mixing
+
+These are the rules when comes to vote requests and mixing:
+
+* The mixing of the vote requests always occurs inside the enclave, the code of which can be found
+  [here](enclave/src/lib.rs).
+* The mixing will be delayed as late as possible in the poll's timeline (details below). This is to prevent leakage 
+  of information of the private vote requests, something which can happen if there are multiple mixes.
+* This means there will only be one mixing event, and thus [vote requests](#post-vote) and
+  [remove vote requests](#post-remove-vote) after the mix will be rejected.
+* If the vote request returns with a success the service will include it in the mixing, even if it is the only
+  request for that poll.
+* The assigned netted vote balance will never be more than the balance in the original vote request.
+* If one on the rare event all of the vote requests net to a balance of zero (i.e. neither aye or nay) then the 
+  Glove vote will be abstain with a balance of one.
+* If at the time of mixing an account has insufficient funds to cover their assigned vote balance, their vote will 
+  be removed and mix attempted again.
+* If a participant also votes on the same poll outside of Glove, their vote request will be removed. If the service has
+  already mixed the votes then a re-mix will be attempted immediately. This is the only scenario where a poll will 
+  be mixed more than once.
+
+The Glove service will initiate a mxing of the vote requests for a poll when one of the following conditions are met:
+
+* The poll reaches near the end of its decision period (but still enough time to mix and submit on-chain). There are 
+  two scenarios:
+  * The poll hasn't entered confirmation and is on its way to be rejected. The mixed votes will be submitted, even if 
+    they are "nay" and only confirming the poll's rejection. This is necessary to show the Glove proxy is not
+    withholding votes.
+  * The poll is in confirmation. Even though the confirmation period will extend beyond the poll's decision period, 
+    it's possible for a non-Glove voter to take it out of confirmation, and thus cause it to be rejected immediately.
+    Thus the Glove service risks not being able to mix if it waits until the end of the confirmation period.
+* The poll reaches near the end of its confirmation period **and** it's still within its decision period. Since the poll 
+  is on course to be accepted if the confirmation period elapses, the Glove service will need to mix before then.
+
+> [!WARNING]
+> Testing and development can be difficult with this behaviour as decision periods can last days. To alleviate this, 
+> the `--regular-mix` flag can turn this off and mix votes on a regular basis. However, this MUST NOT be enabled in 
+> production as it will leak private information of the vote requests.
 
 # Running the Glove service
 
