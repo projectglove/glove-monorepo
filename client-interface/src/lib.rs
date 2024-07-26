@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
@@ -46,7 +47,7 @@ pub type Block = subxt::blocks::Block<PolkadotConfig, OnlineClient>;
 pub type ExtrinsicDetails = subxt::blocks::ExtrinsicDetails<PolkadotConfig, OnlineClient>;
 pub type ExtrinsicEvents = subxt::blocks::ExtrinsicEvents<PolkadotConfig>;
 pub type SubxtMultiAddressId32 = subxt::utils::MultiAddress<SubxtAccountId32, ()>;
-
+pub type TrackInfo = metadata::runtime_types::pallet_referenda::types::TrackInfo<u128, u32>;
 pub type ReferendumStatus = metadata::runtime_types::pallet_referenda::types::ReferendumStatus<
     u16,
     OriginCaller,
@@ -54,7 +55,7 @@ pub type ReferendumStatus = metadata::runtime_types::pallet_referenda::types::Re
     Bounded<RuntimeCall, BlakeTwo256>,
     u128,
     Tally<u128>,
-    subxt::utils::AccountId32,
+    SubxtAccountId32,
     (u32, u32)
 >;
 
@@ -68,7 +69,7 @@ pub struct SubstrateNetwork {
 impl SubstrateNetwork {
     pub async fn connect(url: String) -> Result<Self> {
         let api = OnlineClient::from_url(url).await
-            .with_context(|| "Unable to connect to network endpoint:")?;
+            .context("Unable to connect to network endpoint:")?;
         let ss58_address_format = api.constants()
             .at(&metadata::constants().system().ss58_prefix())
             .map(Ss58AddressFormat::custom)?;
@@ -78,7 +79,7 @@ impl SubstrateNetwork {
             network_name = "rococo".to_string();
         }
         let token = Ss58AddressFormatRegistry::try_from(ss58_address_format)
-            .with_context(|| "Unable to determine network SS58 format")?
+            .context("Unable to determine network SS58 format")?
             .tokens()
             .first()
             .map(|token_registry| Token::from(*token_registry))
@@ -204,6 +205,24 @@ impl SubstrateNetwork {
             .storage()
             .at_latest().await?
             .fetch(&storage().referenda().referendum_info_for(poll_index).unvalidated()).await
+    }
+
+    pub fn get_tracks(&self) -> Result<HashMap<u16, TrackInfo>, SubxtError> {
+        let tracks = self.api
+            .constants()
+            .at(&metadata::constants().referenda().tracks())?
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        Ok(tracks)
+    }
+
+    pub async fn current_block_number(&self) -> Result<u32, SubxtError> {
+        let current_block_number = self.api
+            .storage()
+            .at_latest().await?
+            .fetch(&storage().system().number()).await?
+            .ok_or_else(|| SubxtError::Other("Current block number not available".into()))?;
+        Ok(current_block_number)
     }
 }
 

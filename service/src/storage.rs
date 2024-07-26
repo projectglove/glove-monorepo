@@ -97,6 +97,18 @@ impl InMemoryGloveStorage {
     }
 }
 
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error("DynamoDB put item error: {0}")]
+    DynamodbPutItem(#[from] SdkError<PutItemError>),
+    #[error("DynamoDB delete item error: {0}")]
+    DynamodbDeleteItem(#[from] SdkError<DeleteItemError>),
+    #[error("DynamoDB query error: {0}")]
+    DynamodbQuery(#[from] SdkError<QueryError>),
+    #[error("DynamoDB scan error: {0}")]
+    DynamodbScan(#[from] SdkError<ScanError>)
+}
+
 #[cfg(test)]
 mod tests {
     use sp_runtime::MultiSignature;
@@ -181,16 +193,4 @@ mod tests {
         let signature = MultiSignature::Sr25519(sr25519::Signature::default());
         SignedVoteRequest { request, signature }
     }
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error("DynamoDB put item error: {0}")]
-    DynamodbPutItem(#[from] SdkError<PutItemError>),
-    #[error("DynamoDB delete item error: {0}")]
-    DynamodbDeleteItem(#[from] SdkError<DeleteItemError>),
-    #[error("DynamoDB query error: {0}")]
-    DynamodbQuery(#[from] SdkError<QueryError>),
-    #[error("DynamoDB scan error: {0}")]
-    DynamodbScan(#[from] SdkError<ScanError>)
 }

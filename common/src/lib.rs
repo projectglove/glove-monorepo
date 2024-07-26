@@ -119,7 +119,8 @@ pub struct AssignedBalance {
     pub conviction: Conviction
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize, Encode, Decode, MaxEncodedLen)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Hash, Serialize, Deserialize,
+    Encode, Decode, MaxEncodedLen)]
 pub struct ExtrinsicLocation {
     pub block_number: u32,
     /// Index of the extrinsic within the block.
