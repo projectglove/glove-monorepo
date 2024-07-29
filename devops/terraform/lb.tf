@@ -5,12 +5,6 @@ resource "aws_lb" "enclave" {
   security_groups            = [aws_security_group.lb_enclave.id]
   subnets                    = [for s in data.aws_subnets.default.ids : s]
   enable_deletion_protection = true
-  /*  access_logs {
-    bucket  = aws_s3_bucket.lb_logs.id
-    prefix  = "test-lb"
-    enabled = true
-  }
-*/
 }
 
 resource "aws_lb_listener" "enclave-http" {
@@ -25,11 +19,6 @@ resource "aws_lb_listener" "enclave-http" {
       status_code = "HTTP_301"
     }
   }
-  /*  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.enclave.arn
-  }
-*/
 }
 
 resource "aws_lb_listener" "enclave-https" {
