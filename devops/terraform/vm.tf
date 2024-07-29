@@ -4,8 +4,9 @@ resource "aws_key_pair" "deployer" {
 }
 
 resource "aws_instance" "enclave" {
-  ami           = data.aws_ami.al2023.id
-  instance_type = "c5.2xlarge"
+  ami                  = data.aws_ami.al2023.id
+  instance_type        = "c5.2xlarge"
+  iam_instance_profile = aws_iam_instance_profile.enclave.name
   enclave_options {
     enabled = true
   }
@@ -67,4 +68,28 @@ resource "aws_security_group_rule" "internal_all" {
   security_group_id = aws_security_group.internal.id
 }
 
+resource "aws_iam_role" "enclave" {
+  name                 = "enclave"
+  assume_role_policy   = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Sid    = ""
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      },
+    ]
+  })
+  managed_policy_arns = [data.aws_iam_policy.dynamodb_full.arn]
+  description          = "Give EC2 instances access to DynamoDB"
+  force_detach_policies = true
+}
 
+
+resource "aws_iam_instance_profile" "enclave" {
+  name = "enclave"
+  role = aws_iam_role.enclave.name
+}
