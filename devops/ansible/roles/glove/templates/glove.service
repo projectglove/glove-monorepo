@@ -3,7 +3,7 @@ Description=Glove Nitro service
 After=network.target
 
 [Service]
-ExecStart=/usr/local/glove/service --proxy-secret-phrase {{ glove_proxy_secret_phrase }} --address {{ glove_address }} --node-endpoint {{ glove_node_endpoint }} --regular-mix {% if glove_db == "dynamodb" %}dynamodb{% else %}in-memory{% endif %}
+ExecStart=/usr/local/glove/service --proxy-secret-phrase {{ glove_proxy_secret_phrase }} --address {{ glove_address }} --node-endpoint {{ glove_node_endpoint }} --regular-mix {% if glove_db == "dynamodb" %}dynamodb{% else %}in-memory --table-name {{ glove_db_table }}{% endif %}
 Type=simple
 Restart=always
 
