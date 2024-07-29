@@ -2,8 +2,11 @@
 # Address the service will listen on
 glove_address: 0.0.0.0:8080
 
+# How to store information (in memory or in the DynamoDB)
+glove_db: dynamodb
+
 # URL to a substrate node endpoint
-# See https://wiki.polkadot.network/docs/maintain-endpoints for more information.
+# See https://wiki.polkadot.network/docs/maintain-endpoints for more information
 glove_node_endpoint: "wss://rococo-rpc.polkadot.io"
 
 # Secret phrase for the Glove proxy account.
