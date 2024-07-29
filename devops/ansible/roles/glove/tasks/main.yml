@@ -11,7 +11,7 @@
 
 - name: Install Nitro
   ansible.builtin.dnf:
-    name:  aws-nitro-enclaves-cli
+    name: aws-nitro-enclaves-cli
     state: latest
 
 - name: Enable services (docker, nitro alocator)
@@ -52,10 +52,10 @@
     group: root
     mode: 0755
   loop:
-     - service
-     - glove.eif
+    - service
+    - glove.eif
   notify:
-     - Restart daemon
+    - Restart service
 
 - name: Copy Glove Service file
   ansible.builtin.template:
@@ -65,7 +65,8 @@
     group: root
     mode: 0644
   notify:
-    - Restart daemon
+    - Reload daemon
+    - Restart service
 
 - name: Set Glove service
   ansible.builtin.systemd_service:
