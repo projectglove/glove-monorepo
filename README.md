@@ -301,3 +301,23 @@ The role gets the latest binaries from the github, release page, sets systemd se
 
 The ansible playbook and the role are used in the release GHA.
 Every time a new tag is set, the action builds binaries, and then uses Ansible to update the test deployment.
+
+## Debbuging
+
+To check the status of the service run:
+```
+systemctl status glove
+```
+
+Glove logs are picked up by SystemD and can be access with the usually methods. E.g.:
+```
+journalctl -u glove
+```
+or to follow the flow of logs:
+```
+journalctl -fu glove
+```
+or to get extra information on latest logs:
+```
+journalctl -xeu glove
+```
