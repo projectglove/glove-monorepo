@@ -6,7 +6,7 @@ glove_address: 0.0.0.0:8080
 glove_db: dynamodb
 
 # DB Table name
-glove_db_name: glove
+glove_db_table: glove
 
 # URL to a substrate node endpoint
 # See https://wiki.polkadot.network/docs/maintain-endpoints for more information
