@@ -10,3 +10,4 @@ target/
 .idea/
 
 terraform.tfstate*
+devops/ansible/roles/extra_ssh
