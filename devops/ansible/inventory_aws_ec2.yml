@@ -1,0 +1,16 @@
+---
+plugin: aws_ec2
+regions:
+  - us-east-2
+filters:
+  instance-state-name: running
+keyed_groups:
+  - key: tags.Name
+    prefix: tag
+hostnames:
+  - tag:Name
+compose:
+  ansible_host: public_ip_address
+  ansible_user: ec2-user
+  ansible_ssh_private_key_file: ~/.ssh/glove.prv
+profile: glove-test

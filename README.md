@@ -289,7 +289,8 @@ The scripts in the [terraform](devops/terraform) subfolder are responsible for d
 - Application Load Balancer (ALB),
 - DNS entries,
 - SSL certificate for a test system,
-- and matching Security Groups (SG).
+- DynamoDB table,
+- and matching Security Groups (SG) and IAM roles.
 
 Please note, that in the test TLS traffic terminates on the load balancer, not VM.
 

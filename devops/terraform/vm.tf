@@ -4,8 +4,9 @@ resource "aws_key_pair" "deployer" {
 }
 
 resource "aws_instance" "enclave" {
-  ami           = data.aws_ami.al2023.id
-  instance_type = "c5.2xlarge"
+  ami                  = data.aws_ami.al2023.id
+  instance_type        = "c5.2xlarge"
+  iam_instance_profile = aws_iam_instance_profile.enclave.name
   enclave_options {
     enabled = true
   }
@@ -15,7 +16,8 @@ resource "aws_instance" "enclave" {
     volume_size = 100
   }
   tags = {
-    Name = "HelloWorld"
+    Environment = "test"
+    Name        = "Glove"
   }
   vpc_security_group_ids = [
     aws_security_group.external-ssh.id,
@@ -66,5 +68,3 @@ resource "aws_security_group_rule" "internal_all" {
   description       = "All egress"
   security_group_id = aws_security_group.internal.id
 }
-
-

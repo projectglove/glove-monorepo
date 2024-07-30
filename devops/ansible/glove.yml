@@ -1,5 +1,6 @@
 ---
-- hosts: enclave
+- hosts: tag_Glove
   become: true
+#  user: ec2-user
   roles:
     - glove

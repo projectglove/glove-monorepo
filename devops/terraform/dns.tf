@@ -39,6 +39,7 @@ resource "aws_acm_certificate" "test" {
   validation_method = "DNS"
   tags = {
     Environment = "test"
+    Name        = "Glove"
   }
   lifecycle {
     create_before_destroy = true
