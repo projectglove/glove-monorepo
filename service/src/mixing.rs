@@ -1,7 +1,7 @@
 use std::io;
 
 use tracing::debug;
-use tracing::log::warn;
+use tracing::warn;
 
 use common::{attestation, SignedGloveResult, SignedVoteRequest};
 use common::attestation::{AttestationBundle, GloveProof};

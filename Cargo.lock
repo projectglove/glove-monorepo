@@ -1234,7 +1234,7 @@ checksum = "4b82cf0babdbd58558212896d1a4272303a57bdb245c2bf1147185fb45640e70"
 
 [[package]]
 name = "client"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "bigdecimal",
@@ -1243,6 +1243,8 @@ dependencies = [
  "common",
  "hex",
  "reqwest",
+ "reqwest-middleware",
+ "reqwest-retry",
  "sp-core 33.0.1",
  "sp-runtime 37.0.0",
  "ss58-registry",
@@ -1256,7 +1258,7 @@ dependencies = [
 
 [[package]]
 name = "client-interface"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "common",
@@ -1275,6 +1277,7 @@ dependencies = [
  "subxt-signer",
  "thiserror",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1285,7 +1288,7 @@ checksum = "0b6a852b24ab71dffc585bcb46eaf7959d175cb865a7152e35b348d1b2960422"
 
 [[package]]
 name = "common"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "aws-nitro-enclaves-cose",
  "aws-nitro-enclaves-nsm-api",
@@ -1822,7 +1825,7 @@ dependencies = [
 
 [[package]]
 name = "enclave"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "aws-nitro-enclaves-nsm-api",
@@ -1844,7 +1847,7 @@ dependencies = [
 
 [[package]]
 name = "enclave-interface"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "common",
  "nix 0.27.1",
@@ -2186,8 +2189,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4567c8db10ae91089c99af84c68c38da3ec2f087c3f82960bcdbf3656b6f4d7"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "wasi",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -2767,6 +2772,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e0242819d153cba4b4b05a5a8f2a7e9bbf97b6055b2a002b395c96b5ff3c0222"
 dependencies = [
  "cfg-if",
+ "js-sys",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -3507,12 +3515,37 @@ checksum = "bb813b8af86854136c6922af0598d719255ecb2179515e6e7730d468f05c9cae"
 
 [[package]]
 name = "parking_lot"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d17b78036a60663b797adeaee46f5c9dfebb86948d1255007a1d6be0271ff99"
+dependencies = [
+ "instant",
+ "lock_api",
+ "parking_lot_core 0.8.6",
+]
+
+[[package]]
+name = "parking_lot"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1bf18183cf54e8d6059647fc3063646a1801cf30896933ec2311622cc4b9a27"
 dependencies = [
  "lock_api",
- "parking_lot_core",
+ "parking_lot_core 0.9.10",
+]
+
+[[package]]
+name = "parking_lot_core"
+version = "0.8.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60a2cfe6f0ad2bfc16aefa463b497d5c7a5ecd44a23efa72aa342d90177356dc"
+dependencies = [
+ "cfg-if",
+ "instant",
+ "libc",
+ "redox_syscall 0.2.16",
+ "smallvec",
+ "winapi",
 ]
 
 [[package]]
@@ -3523,7 +3556,7 @@ checksum = "1e401f977ab385c9e4e3ab30627d6f26d00e2c73eef317493c4ec6d468726cf8"
 dependencies = [
  "cfg-if",
  "libc",
- "redox_syscall",
+ "redox_syscall 0.5.1",
  "smallvec",
  "windows-targets 0.52.5",
 ]
@@ -3891,6 +3924,15 @@ dependencies = [
 
 [[package]]
 name = "redox_syscall"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb5a58c1855b4b6819d59012155603f0b22ad30cad752600aadfcb695265519a"
+dependencies = [
+ "bitflags 1.3.2",
+]
+
+[[package]]
+name = "redox_syscall"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "469052894dcb553421e483e4209ee581a45100d31b4018de03e5a7ad86374a7e"
@@ -4008,6 +4050,52 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "winreg",
+]
+
+[[package]]
+name = "reqwest-middleware"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39346a33ddfe6be00cbc17a34ce996818b97b230b87229f10114693becca1268"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "http 1.1.0",
+ "reqwest",
+ "serde",
+ "thiserror",
+ "tower-service",
+]
+
+[[package]]
+name = "reqwest-retry"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf2a94ba69ceb30c42079a137e2793d6d0f62e581a24c06cd4e9bb32e973c7da"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "futures",
+ "getrandom",
+ "http 1.1.0",
+ "hyper 1.3.1",
+ "parking_lot 0.11.2",
+ "reqwest",
+ "reqwest-middleware",
+ "retry-policies",
+ "tokio",
+ "tracing",
+ "wasm-timer",
+]
+
+[[package]]
+name = "retry-policies"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5875471e6cab2871bc150ecb8c727db5113c9338cc3354dc5ee3425b6aa40a1c"
+dependencies = [
+ "rand",
 ]
 
 [[package]]
@@ -4615,11 +4703,12 @@ dependencies = [
 
 [[package]]
 name = "service"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "aws-config",
  "aws-sdk-dynamodb",
+ "aws-smithy-runtime-api",
  "axum",
  "cfg-if",
  "clap",
@@ -4840,7 +4929,7 @@ dependencies = [
  "log",
  "lru",
  "no-std-net",
- "parking_lot",
+ "parking_lot 0.12.3",
  "pin-project",
  "rand",
  "rand_chacha",
@@ -4961,7 +5050,7 @@ dependencies = [
  "merlin",
  "parity-bip39",
  "parity-scale-codec",
- "parking_lot",
+ "parking_lot 0.12.3",
  "paste",
  "primitive-types",
  "rand",
@@ -5008,7 +5097,7 @@ dependencies = [
  "merlin",
  "parity-bip39",
  "parity-scale-codec",
- "parking_lot",
+ "parking_lot 0.12.3",
  "paste",
  "primitive-types",
  "rand",
@@ -5140,7 +5229,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bdbab8b61bd61d5f8625a0c75753b5d5a23be55d3445419acd42caf59cf6236b"
 dependencies = [
  "parity-scale-codec",
- "parking_lot",
+ "parking_lot 0.12.3",
  "sp-core 31.0.0",
  "sp-externalities 0.27.0",
 ]
@@ -5152,7 +5241,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92a909528663a80829b95d582a20dd4c9acd6e575650dee2bcaf56f4740b305e"
 dependencies = [
  "parity-scale-codec",
- "parking_lot",
+ "parking_lot 0.12.3",
  "sp-core 33.0.1",
  "sp-externalities 0.28.0",
 ]
@@ -5282,7 +5371,7 @@ dependencies = [
  "hash-db",
  "log",
  "parity-scale-codec",
- "parking_lot",
+ "parking_lot 0.12.3",
  "rand",
  "smallvec",
  "sp-core 31.0.0",
@@ -5304,7 +5393,7 @@ dependencies = [
  "hash-db",
  "log",
  "parity-scale-codec",
- "parking_lot",
+ "parking_lot 0.12.3",
  "rand",
  "smallvec",
  "sp-core 33.0.1",
@@ -5386,7 +5475,7 @@ dependencies = [
  "memory-db",
  "nohash-hasher",
  "parity-scale-codec",
- "parking_lot",
+ "parking_lot 0.12.3",
  "rand",
  "scale-info",
  "schnellru",
@@ -5411,7 +5500,7 @@ dependencies = [
  "memory-db",
  "nohash-hasher",
  "parity-scale-codec",
- "parking_lot",
+ "parking_lot 0.12.3",
  "rand",
  "scale-info",
  "schnellru",
@@ -5521,6 +5610,22 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "stress-tool"
+version = "0.0.7"
+dependencies = [
+ "anyhow",
+ "clap",
+ "client",
+ "client-interface",
+ "common",
+ "rand",
+ "reqwest",
+ "sp-runtime 37.0.0",
+ "subxt-signer",
+ "tokio",
+]
 
 [[package]]
 name = "strsim"
@@ -6526,6 +6631,21 @@ name = "wasm-bindgen-shared"
 version = "0.2.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af190c94f2773fdb3729c55b007a722abb5384da03bc0986df4c289bf5567e96"
+
+[[package]]
+name = "wasm-timer"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be0ecb0db480561e9a7642b5d3e4187c128914e58aa84330b9493e3eb68c5e7f"
+dependencies = [
+ "futures",
+ "js-sys",
+ "parking_lot 0.11.2",
+ "pin-utils",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
 
 [[package]]
 name = "wasmi"

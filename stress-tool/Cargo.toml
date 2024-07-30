@@ -1,0 +1,18 @@
+[package]
+name = "stress-tool"
+homepage.workspace = true
+repository.workspace = true
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+common = { path = "../common" }
+client-interface = { path = "../client-interface" }
+client = { path = "../client" }
+tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "macros"] }
+sp-runtime.workspace = true
+rand.workspace = true
+reqwest.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+subxt-signer.workspace = true

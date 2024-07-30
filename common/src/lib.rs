@@ -227,6 +227,7 @@ mod tests {
 "#;
 
         let signed_request = serde_json::from_str::<SignedVoteRequest>(json).unwrap();
+        println!("{:#?}", signed_request);
         assert!(signed_request.verify());
         let request = signed_request.request;
         assert_eq!(request.account, dev::bob().public_key().0.into());
