@@ -16,7 +16,8 @@ resource "aws_instance" "enclave" {
     volume_size = 100
   }
   tags = {
-    Name = "HelloWorld"
+    Environment = "test"
+    Name        = "Glove"
   }
   vpc_security_group_ids = [
     aws_security_group.external-ssh.id,
@@ -66,30 +67,4 @@ resource "aws_security_group_rule" "internal_all" {
   cidr_blocks       = [data.aws_vpc.default.cidr_block]
   description       = "All egress"
   security_group_id = aws_security_group.internal.id
-}
-
-resource "aws_iam_role" "enclave" {
-  name                 = "enclave"
-  assume_role_policy   = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Sid    = ""
-        Principal = {
-          Service = "ec2.amazonaws.com"
-        }
-      },
-    ]
-  })
-  managed_policy_arns = [data.aws_iam_policy.dynamodb_full.arn]
-  description          = "Give EC2 instances access to DynamoDB"
-  force_detach_policies = true
-}
-
-
-resource "aws_iam_instance_profile" "enclave" {
-  name = "enclave"
-  role = aws_iam_role.enclave.name
 }

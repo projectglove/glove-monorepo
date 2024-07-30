@@ -14,6 +14,7 @@ resource "aws_dynamodb_table" "glove" {
     type = "S"
   }
   tags = {
-    Name = "Glove"
+    Environment = "test"
+    Name        = "Glove"
   }
 }
