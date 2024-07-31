@@ -136,6 +136,7 @@ pub enum Error {
 mod tests {
     use aws_nitro_enclaves_cose::CoseSign1;
     use parity_scale_codec::Decode;
+    use sp_core::bytes::from_hex;
 
     use super::*;
 
@@ -145,9 +146,9 @@ mod tests {
     fn decode_and_verify_attestation() {
         let doc = Attestation::try_from(RAW_NITRO_ATTESTATION_BYTES).unwrap().verify().unwrap();
         println!("{:?}", doc);
-        assert_eq!(doc.pcrs.get(&0).unwrap().to_vec(), hex::decode("dd1c94beae9a589b37f6601ecf73c297ff0bf41a8872f737fabf3c9a2a96eb3b1dcdabc8e33ba1f7654b528518b8b9ed").unwrap());
-        assert_eq!(doc.pcrs.get(&1).unwrap().to_vec(), hex::decode("52b919754e1643f4027eeee8ec39cc4a2cb931723de0c93ce5cc8d407467dc4302e86490c01c0d755acfe10dbf657546").unwrap());
-        assert_eq!(doc.pcrs.get(&2).unwrap().to_vec(), hex::decode("35a4393a77e7f60a9eb28b974b400149e36fe07791a84b3285cb16f3fdeaf7503f98ecdf6cc800d0109166d82fc7052b").unwrap());
+        assert_eq!(doc.pcrs.get(&0).unwrap().to_vec(), from_hex("dd1c94beae9a589b37f6601ecf73c297ff0bf41a8872f737fabf3c9a2a96eb3b1dcdabc8e33ba1f7654b528518b8b9ed").unwrap());
+        assert_eq!(doc.pcrs.get(&1).unwrap().to_vec(), from_hex("52b919754e1643f4027eeee8ec39cc4a2cb931723de0c93ce5cc8d407467dc4302e86490c01c0d755acfe10dbf657546").unwrap());
+        assert_eq!(doc.pcrs.get(&2).unwrap().to_vec(), from_hex("35a4393a77e7f60a9eb28b974b400149e36fe07791a84b3285cb16f3fdeaf7503f98ecdf6cc800d0109166d82fc7052b").unwrap());
         assert_eq!(doc.user_data, None);
         assert_eq!(doc.public_key, None);
         assert_eq!(doc.nonce, None);

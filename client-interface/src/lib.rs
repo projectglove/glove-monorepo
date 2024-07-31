@@ -11,7 +11,6 @@ use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use serde::{Deserialize, Serialize};
 use sp_core::crypto::AccountId32;
 use sp_runtime::{MultiAddress, MultiSignature};
-use sp_runtime::traits::Verify;
 use ss58_registry::{Ss58AddressFormat, Ss58AddressFormatRegistry, Token};
 use subxt::Error as SubxtError;
 use subxt::ext::scale_decode::DecodeAsType;
@@ -23,8 +22,8 @@ use subxt_signer::SecretUri;
 use subxt_signer::sr25519;
 use tokio::sync::Mutex;
 
+use common::{ExtrinsicLocation, verify_js_payload};
 use common::attestation::AttestationBundle;
-use common::ExtrinsicLocation;
 use metadata::proxy::events::ProxyExecuted;
 use metadata::referenda::storage::types::referendum_info_for::ReferendumInfoFor;
 use metadata::runtime_types::frame_support::traits::preimages::Bounded;
@@ -410,7 +409,7 @@ pub struct SignedRemoveVoteRequest {
 
 impl SignedRemoveVoteRequest {
     pub fn verify(&self) -> bool {
-        self.signature.verify(&*self.request.encode(), &self.request.account)
+        verify_js_payload(&self.signature, &self.request, &self.request.account)
     }
 }
 
@@ -430,6 +429,7 @@ mod tests {
     use rand::random;
     use serde_json::{json, Value};
     use sp_core::{ed25519, Pair};
+    use subxt_core::utils::to_hex;
     use subxt_signer::sr25519::dev;
 
     use common::attestation::{Attestation, AttestedData};
@@ -460,7 +460,7 @@ mod tests {
             json!({
                 "proxy_account": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
                 "network_name": "polkadot",
-                "attestation_bundle": hex::encode(&service_info.attestation_bundle.encode()),
+                "attestation_bundle": to_hex(&service_info.attestation_bundle.encode()),
                 "version": "1.0.0"
             })
         );

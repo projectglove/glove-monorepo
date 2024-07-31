@@ -28,8 +28,30 @@ pub struct SignedVoteRequest {
 
 impl SignedVoteRequest {
     pub fn verify(&self) -> bool {
-        self.signature.verify(&*self.request.encode(), &self.request.account)
+        verify_js_payload(&self.signature, &self.request, &self.request.account)
     }
+}
+
+const JS_SIGNING_PREFIX: &[u8] = b"<Bytes>";
+const JS_SIGNING_POSTFIX: &[u8] = b"</Bytes>";
+
+/// Verify a signed SCALE encoded payload which can possibly orginate from Polkadot JS.
+///
+/// The `signRaw` function in Polkadot JS wraps the bytes to be signed with `<Bytes>` and
+/// `</Bytes>`. So verification needs to be tried with and without this wrapping.
+pub fn verify_js_payload<E: Encode>(
+    signature: &MultiSignature,
+    payload: &E,
+    account: &AccountId32
+) -> bool {
+    let capacity = JS_SIGNING_PREFIX.len() + payload.size_hint() + JS_SIGNING_POSTFIX.len();
+    let mut wrapped_bytes = Vec::with_capacity(capacity);
+    wrapped_bytes.extend_from_slice(JS_SIGNING_PREFIX);
+    payload.encode_to(&mut wrapped_bytes);
+    let before_postfix = wrapped_bytes.len();
+    wrapped_bytes.extend_from_slice(JS_SIGNING_POSTFIX);
+    let encoded_payload = &wrapped_bytes[JS_SIGNING_PREFIX.len()..before_postfix];
+    signature.verify(&*wrapped_bytes, account) || signature.verify(encoded_payload, account)
 }
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
@@ -152,13 +174,15 @@ pub mod serde_over_hex_scale {
     use parity_scale_codec::{Decode, Encode};
     use serde::{Deserialize, Deserializer, Serializer};
     use serde::de::Error;
+    use sp_core::bytes::from_hex;
+    use subxt::utils::to_hex;
 
     pub fn serialize<T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
     where
         T: Encode,
         S: Serializer
     {
-        serializer.serialize_str(&hex::encode(value.encode()))
+        serializer.serialize_str(&to_hex(&value.encode()))
     }
 
     pub fn deserialize<'de, T, D>(deserializer: D) -> Result<T, D::Error>
@@ -166,7 +190,7 @@ pub mod serde_over_hex_scale {
         T: Decode,
         D: Deserializer<'de>
     {
-        let bytes = hex::decode(String::deserialize(deserializer)?).map_err(Error::custom)?;
+        let bytes = from_hex(&String::deserialize(deserializer)?).map_err(Error::custom)?;
         T::decode(&mut bytes.as_slice()).map_err(Error::custom)
     }
 }
@@ -177,6 +201,7 @@ mod tests {
     use rand::random;
     use serde_json::{json, Value};
     use sp_core::{Pair, sr25519};
+    use sp_core::bytes::to_hex;
     use subxt_signer::sr25519::dev;
 
     use Conviction::{Locked3x, Locked6x};
@@ -207,8 +232,8 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Value>(&json).unwrap(),
             json!({
-                "request": hex::encode(&signed_request.request.encode()),
-                "signature": hex::encode(&signed_request.signature.encode())
+                "request": to_hex(&signed_request.request.encode(), false),
+                "signature": to_hex(&signed_request.signature.encode(), false)
             })
         );
 
@@ -217,12 +242,12 @@ mod tests {
     }
 
     #[test]
-    fn signed_vote_request_json_using_polkadot_js() {
+    fn signed_vote_request_json_using_polkadot_js_keyring() {
         // Produced from test-resources/vote-request-example.mjs
         let json = r#"
 {
-  "request": "8eaf04151687736326c9fea17e25fc5287613693c912909cb226aa4794f26a486408de7737c59c238890533af25896a2c20608d8b380bb01029acb392781063ee502f5c1912301009c5b3607020000000000000000000002",
-  "signature": "01ea13f59165bc295d1e99629622dc0c13a1c7163017359178606f0e36d1d2c246c021190cf0508b0d60d292a00ba06ed396d5559fe7334c78c95bf289e84ebc81"
+  "request": "0x8eaf04151687736326c9fea17e25fc5287613693c912909cb226aa4794f26a486408de7737c59c238890533af25896a2c20608d8b380bb01029acb392781063ee502f5c1912301009c5b3607020000000000000000000002",
+  "signature": "0x01ea13f59165bc295d1e99629622dc0c13a1c7163017359178606f0e36d1d2c246c021190cf0508b0d60d292a00ba06ed396d5559fe7334c78c95bf289e84ebc81"
 }
 "#;
 
@@ -236,6 +261,27 @@ mod tests {
         assert_eq!(request.balance, 2230000000000);
         assert_eq!(request.aye, true);
         assert_eq!(request.conviction, Conviction::Locked2x);
+    }
+
+    #[test]
+    fn signed_vote_request_json_using_polkadot_js_signraw() {
+        // Produced from Glove frontend
+        let json = r#"
+{
+  "request": "0x28836d6f19d5cd8dd8b26da754c63ae337c6f938a7dc6a12e439ad8a1c69fb0d6408de7737c59c238890533af25896a2c20608d8b380bb01029acb392781063e6503b71b731f0000ac000bf0020000000000000000000004",
+  "signature": "0x017ac41d7c8de53116b37e5205ba0c20900fc04f4cf25cfa78bceb2b91e0b1fc26c08c52be1b0d73dd1856b8673d9f878df244bae898d2f22e28029ee51fe20e89"
+}
+"#;
+        let signed_request = serde_json::from_str::<SignedVoteRequest>(json).unwrap();
+        println!("{:#?}", signed_request);
+        assert!(signed_request.verify());
+        let request = signed_request.request;
+        assert_eq!(request.account, AccountId32::from_str("5CyppCnQKiuY9c22yjHbDTpCqeHzAt7GXQpFAURxycWTS8My").unwrap());
+        assert_eq!(request.poll_index, 217);
+        assert_eq!(request.genesis_hash, H256::from_str("6408de7737c59c238890533af25896a2c20608d8b380bb01029acb392781063e").unwrap());
+        assert_eq!(request.balance, 3230000000000);
+        assert_eq!(request.aye, false);
+        assert_eq!(request.conviction, Conviction::Locked4x);
     }
 
     #[test]
