@@ -20,7 +20,8 @@ serde.workspace = true
 parity-scale-codec.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 serde_with.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+tracing.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

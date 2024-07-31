@@ -143,13 +143,8 @@ The Glove proxy account address. Users will need to first assign this account as
 
 #### `network_name`
 
-The substrate-based network the Glove service is connected to.
-
-#### `node_endpoint`
-
-The [node endpoint](https://wiki.polkadot.network/docs/maintain-endpoints) URL the service is using to interact with the
-network. This is only provided as a convenience for Glove clients, otherwise they can use any node endpoint as long as
-it points to the same network.
+The substrate-based network the Glove service is connected to. This is a [SS58](https://github.com/paritytech/ss58-registry)
+unique identifier.
 
 #### `attestation_bundle`
 
@@ -170,9 +165,8 @@ The version of the Glove service.
 {
   "proxy_account": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
   "network_name": "rococo",
-  "node_endpoint": "wss://rococo-rpc.polkadot.io",
   "attestation_bundle": "6408de7737c59c238890533af25896a2c20608d8b380bb01029acb3927...",
-  "version": "0.0.4"
+  "version": "0.0.7"
 }
 ```
 
@@ -211,8 +205,9 @@ If the vote request was successfully received and accepted by the service then a
 code is returned. This does not mean, however, the vote was mixed and submitted on-chain; just that the Glove service
 will do so at the appropriate time.
 
-If there was something wrong with the vote request then a `400 Bad Request` is returned with a JSON object containing
-the error type (`error`) and description (`description`).
+If request body is invalid then a `422 Unprocessable Entity` is returned. If there was something wrong with the 
+request itself then a `400 Bad Request` is returned with a JSON object containing the error type (`error`) and 
+description (`description`). `429 Too Many Requests` can also be returned and the request should be retried later.
 
 ## `POST /remove-vote`
 
@@ -239,8 +234,9 @@ i.e. the `request` field without the hex-encoding.
 An empty response with `200 OK` status code is returned if the previous vote was successfully removed or if there was
 no matching vote.
 
-If there was something wrong with the request itself then a `400 Bad Request` is returned with a JSON object containing
-the error type (`error`) and description (`description`).
+If request body is invalid then a `422 Unprocessable Entity` is returned. If there was something wrong with the 
+request itself then a `400 Bad Request` is returned with a JSON object containing the error type (`error`) and 
+description (`description`). `429 Too Many Requests` can also be returned and the request should be retried later.
 
 # Client CLI
 

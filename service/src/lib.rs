@@ -7,13 +7,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use sp_runtime::AccountId32;
 use tokio::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use tracing::log::warn;
+use tracing::warn;
 
-use client_interface::{account, account_to_subxt_multi_address, CallableSubstrateNetwork, subscan, SubstrateNetwork};
+use client_interface::{account_to_subxt_multi_address, CallableSubstrateNetwork, subscan};
 use client_interface::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
 use client_interface::metadata::runtime_types::pallet_conviction_voting::vote::{AccountVote, Vote};
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Call as ProxyCall;
 use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeCall;
+use client_interface::subscan::Subscan;
 use common::{AssignedBalance, BASE_AYE, BASE_NAY, Conviction, ExtrinsicLocation, GloveResult, SignedVoteRequest, VoteDirection};
 use common::attestation::{AttestationBundle, AttestationBundleLocation};
 
@@ -25,35 +26,49 @@ pub mod mixing;
 pub mod dynamodb;
 pub mod storage;
 
-/// Get the voters of a poll. Returns a vector of (`AccountId32`, `AccountId32`) tuples. The first
-/// element is the voter, and the second is sender of the vote extrinsic. They will be different if
-/// the vote was proxied.
-pub async fn get_voters(
-    http_client: &reqwest::Client,
-    network: &SubstrateNetwork,
-    poll_index: u32
-) -> anyhow::Result<Vec<(AccountId32, AccountId32)>> {
-    let mut result = Vec::new();
-    // Avoid looking up the same extrinsic multiple times when we encounter the Glove vote batch
-    let mut extrinic_index_to_voter: HashMap<ExtrinsicLocation, AccountId32> = HashMap::new();
-    let votes = subscan::get_votes(http_client, &network.network_name, poll_index, None).await?;
-    for vote in votes {
-        let sender = match extrinic_index_to_voter.entry(vote.extrinsic_index) {
-            Entry::Occupied(entry) => entry.get().clone(),
-            Entry::Vacant(entry) => {
-                let Some(extrinsic) = network.get_extrinsic(vote.extrinsic_index).await? else {
-                    warn!("Extrinsic referenced by subscan not found: {:?}", vote);
-                    continue;
-                };
-                match account(&extrinsic) {
-                    Some(sender) => entry.insert(sender).clone(),
-                    None => continue
-                }
-            }
-        };
-        result.push((vote.account.address, sender));
+/// Voter lookup for a poll.
+#[derive(Clone)]
+pub struct VoterLookup {
+    poll_index: u32,
+    // get_voters is called frequently, so we want to avoid looking up the same extrinsic every
+    // time.
+    cache: Arc<Mutex<HashMap<ExtrinsicLocation, Option<AccountId32>>>>
+}
+
+impl VoterLookup {
+    pub fn new(poll_index: u32) -> Self {
+        Self {
+            poll_index,
+            cache: Arc::default()
+        }
     }
-    Ok(result)
+
+    /// Get the all voters. Returns a vector of (`AccountId32`, `AccountId32`) tuples. The first
+    /// element is the voter, and the second is sender of the vote extrinsic. They will be different
+    /// if the vote was proxied.
+    pub async fn get_voters(
+        &self,
+        subscan: &Subscan
+    ) -> Result<Vec<(AccountId32, Option<AccountId32>)>, subscan::Error> {
+        let mut result = Vec::new();
+        let votes = subscan.get_votes(self.poll_index, None).await?;
+        let mut cache = self.cache.lock().await;
+        for vote in votes {
+            let sender = match cache.entry(vote.extrinsic_index) {
+                Entry::Occupied(entry) => entry.get().clone(),
+                Entry::Vacant(entry) => {
+                    if let Some(extrinsic) = subscan.get_extrinsic(vote.extrinsic_index).await? {
+                        entry.insert(extrinsic.account_display.map(|a| a.address)).clone()
+                    } else {
+                        warn!("Extrinsic not found: {:?}", vote.extrinsic_index);
+                        entry.insert(None).clone()
+                    }
+                }
+            };
+            result.push((vote.account.address, sender));
+        }
+        Ok(result)
+    }
 }
 
 // TODO Deal with mixed_balance of zero
@@ -99,7 +114,6 @@ pub struct GloveContext {
     pub enclave_handle: EnclaveHandle,
     pub attestation_bundle: AttestationBundle,
     pub network: CallableSubstrateNetwork,
-    pub node_endpoint: String,
     pub regular_mix_enabled: bool,
     pub state: GloveState,
 }
@@ -196,7 +210,12 @@ impl GloveState {
 
     pub async fn get_poll_state_ref(&self, poll_index: u32) -> PollStateRef {
         let mut poll_states = self.poll_states.lock().await;
-        poll_states.entry(poll_index).or_default().clone()
+        poll_states.entry(poll_index).or_insert_with(|| {
+            PollStateRef {
+                inner: Arc::default(),
+                voter_lookup: VoterLookup::new(poll_index)
+            }
+        }).clone()
     }
 
     async fn remove_poll_state(&self, poll_index: u32) {
@@ -204,11 +223,12 @@ impl GloveState {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct PollStateRef {
     // There is a read-write lock here to support concurrent addition/removal of vote requests, but
     // synchronized mixing of the votes.
-    inner: Arc<RwLock<PollState>>
+    inner: Arc<RwLock<PollState>>,
+    pub voter_lookup: VoterLookup
 }
 
 #[derive(Default)]

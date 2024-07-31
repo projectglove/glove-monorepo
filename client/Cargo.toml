@@ -16,6 +16,8 @@ subxt-core.workspace = true
 subxt-signer.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 reqwest.workspace = true
+reqwest-middleware = { workspace = true, features = ["json"] }
+reqwest-retry.workspace = true
 strum.workspace = true
 sp-core.workspace = true
 sp-runtime.workspace = true

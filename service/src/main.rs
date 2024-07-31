@@ -4,6 +4,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context};
+use aws_sdk_dynamodb::error::SdkError;
+use aws_sdk_dynamodb::operation::delete_item::DeleteItemError;
+use aws_sdk_dynamodb::operation::put_item::PutItemError;
+use aws_sdk_dynamodb::operation::query::QueryError;
+use aws_sdk_dynamodb::operation::scan::ScanError;
 use axum::extract::{Json, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -20,7 +25,7 @@ use tokio::spawn;
 use tokio::time::sleep;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info};
-use tracing::log::warn;
+use tracing::warn;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
 use attestation::Error::InsecureMode;
@@ -37,13 +42,15 @@ use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::NotP
 use client_interface::metadata::runtime_types::pallet_referenda::types::DecidingStatus;
 use client_interface::metadata::runtime_types::polkadot_runtime::{RuntimeCall, RuntimeError};
 use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError::Proxy;
+use client_interface::subscan::Subscan;
 use common::{attestation, SignedGloveResult, SignedVoteRequest};
 use common::attestation::{AttestationBundle, AttestationBundleLocation, GloveProofLite};
 use RuntimeError::ConvictionVoting;
-use service::{get_voters, GloveContext, GloveState, mixing, storage, to_proxied_vote_call};
+use service::{GloveContext, GloveState, mixing, storage, to_proxied_vote_call};
 use service::dynamodb::DynamodbGloveStorage;
 use service::enclave::EnclaveHandle;
 use service::storage::{GloveStorage, InMemoryGloveStorage};
+use storage::Error as StorageError;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Glove proxy service")]
@@ -193,17 +200,17 @@ async fn main() -> anyhow::Result<()> {
         enclave_handle,
         attestation_bundle,
         network,
-        node_endpoint: args.node_endpoint,
         regular_mix_enabled: args.regular_mix,
         state: GloveState::default()
     });
 
+    let subscan = Subscan::new(glove_context.network.network_name.clone());
     if args.regular_mix {
         warn!("Regular mixing of votes is enabled. This is not suitable for production.");
     } else {
-        mark_voted_polls_as_final(glove_context.clone()).await?;
+        mark_voted_polls_as_final(glove_context.clone(), &subscan).await?;
     }
-    start_background_thread(glove_context.clone());
+    start_background_thread(glove_context.clone(), subscan);
 
     let router = Router::new()
         .route("/info", get(info))
@@ -252,13 +259,16 @@ async fn initialize_enclave(enclave_mode: EnclaveMode) -> io::Result<EnclaveHand
     }
 }
 
-async fn mark_voted_polls_as_final(context: Arc<GloveContext>) -> anyhow::Result<()> {
-    let http_client = reqwest::Client::builder().build().unwrap();
-    let glove_proxy = context.network.account();
+async fn mark_voted_polls_as_final(
+    context: Arc<GloveContext>,
+    subscan: &Subscan
+) -> anyhow::Result<()> {
+    let glove_proxy = Some(context.network.account());
     let poll_indices = context.storage.get_poll_indices().await?;
     debug!("Polls: {:?}", poll_indices);
     for poll_index in poll_indices {
-        let proxy_has_voted = get_voters(&http_client, &context.network, poll_index).await?
+        let voter_lookup = context.state.get_poll_state_ref(poll_index).await.voter_lookup;
+        let proxy_has_voted = voter_lookup.get_voters(&subscan).await?
             .into_iter()
             .any(|(_, sender)| sender == glove_proxy);
         if proxy_has_voted {
@@ -270,10 +280,10 @@ async fn mark_voted_polls_as_final(context: Arc<GloveContext>) -> anyhow::Result
     Ok(())
 }
 
-fn start_background_thread(context: Arc<GloveContext>) {
+fn start_background_thread(context: Arc<GloveContext>, subscan: Subscan) {
     spawn(async move {
         loop {
-            if let Err(error) = run_background_task(context.clone()).await {
+            if let Err(error) = run_background_task(context.clone(), subscan.clone()).await {
                 warn!("Error from background task: {:?}", error)
             }
             sleep(Duration::from_secs(60)).await;
@@ -281,11 +291,10 @@ fn start_background_thread(context: Arc<GloveContext>) {
     });
 }
 
-async fn run_background_task(context: Arc<GloveContext>) -> anyhow::Result<()> {
+async fn run_background_task(context: Arc<GloveContext>, subscan: Subscan) -> anyhow::Result<()> {
     let network = &context.network;
     let storage = &context.storage;
     let regular_mix_enabled = context.regular_mix_enabled;
-    let http_client = reqwest::Client::builder().build().unwrap();
     let tracks = network.get_tracks()?;
 
     for poll_index in storage.get_poll_indices().await? {
@@ -295,7 +304,7 @@ async fn run_background_task(context: Arc<GloveContext>) -> anyhow::Result<()> {
             continue;
         };
         let mut mix_required = regular_mix_enabled && context.state.was_vote_added(poll_index).await;
-        if check_non_glove_voters(&http_client, &context, poll_index).await? {
+        if check_non_glove_voters(&subscan, &context, poll_index).await? {
             mix_required = true;
         }
         if context.state.is_mix_finalized(poll_index).await {
@@ -320,14 +329,15 @@ async fn run_background_task(context: Arc<GloveContext>) -> anyhow::Result<()> {
 }
 
 async fn check_non_glove_voters(
-    http_client: &reqwest::Client,
+    subscan: &Subscan,
     context: &GloveContext,
     poll_index: u32
 ) -> anyhow::Result<bool>{
-    let glove_proxy = context.network.account();
+    let glove_proxy = Some(context.network.account());
     let mut non_glove_voters = HashSet::new();
     let mut mix_required = false;
-    for (voter, sender) in get_voters(&http_client, &context.network, poll_index).await? {
+    let voter_lookup = context.state.get_poll_state_ref(poll_index).await.voter_lookup;
+    for (voter, sender) in voter_lookup.get_voters(&subscan).await? {
         if sender == glove_proxy {
             continue;
         }
@@ -366,7 +376,6 @@ async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
     Json(ServiceInfo {
         proxy_account: context.network.account(),
         network_name: context.network.network_name.clone(),
-        node_endpoint: context.node_endpoint.clone(),
         attestation_bundle: context.attestation_bundle.clone(),
         version: env!("CARGO_PKG_VERSION").to_string()
     })
@@ -610,6 +619,48 @@ enum InternalError {
     Storage(#[from] storage::Error)
 }
 
+impl InternalError {
+    fn is_too_many_requests(&self) -> bool {
+        let InternalError::Storage(storage_error) = self else {
+            return false;
+        };
+        match storage_error {
+            StorageError::DynamodbPutItem(SdkError::ServiceError(error)) => matches!(error.err(),
+                PutItemError::ProvisionedThroughputExceededException(_) |
+                PutItemError::RequestLimitExceeded(_)
+            ),
+            StorageError::DynamodbDeleteItem(SdkError::ServiceError(error)) => matches!(error.err(),
+                DeleteItemError::ProvisionedThroughputExceededException(_) |
+                DeleteItemError::RequestLimitExceeded(_)
+            ),
+            StorageError::DynamodbQuery(SdkError::ServiceError(error)) => matches!(error.err(),
+                QueryError::ProvisionedThroughputExceededException(_) |
+                QueryError::RequestLimitExceeded(_)
+            ),
+            StorageError::DynamodbScan(SdkError::ServiceError(error)) => matches!(error.err(),
+                ScanError::ProvisionedThroughputExceededException(_) |
+                ScanError::RequestLimitExceeded(_)
+            ),
+            _ => false
+        }
+    }
+}
+
+impl IntoResponse for InternalError {
+    fn into_response(self) -> Response {
+        if self.is_too_many_requests() {
+            warn!("Too many requests: {:?}", self);
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many requests, please try again later".to_string()
+            ).into_response()
+        } else {
+            warn!("Unable to service request: {:?}", self);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string()).into_response()
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct BadRequestResponse {
     error: String,
@@ -634,12 +685,39 @@ enum BadVoteRequestError {
     InsufficientBalance
 }
 
+impl IntoResponse for BadVoteRequestError {
+    fn into_response(self) -> Response {
+        let error_variant = match self {
+            BadVoteRequestError::InvalidSignature => "InvalidSignature",
+            BadVoteRequestError::ChainMismatch => "ChainMismatch",
+            BadVoteRequestError::NotMember => "NotMember",
+            BadVoteRequestError::VotedOutsideGlove => "VotedOutsideGlove",
+            BadVoteRequestError::PollNotOngoing => "PollNotOngoing",
+            BadVoteRequestError::PollAlreadyMixed => "PollAlreadyMixed",
+            BadVoteRequestError::InsufficientBalance => "InsufficientBalance"
+        }.to_string();
+        (
+            StatusCode::BAD_REQUEST,
+            Json(BadRequestResponse { error: error_variant, description: self.to_string() })
+        ).into_response()
+    }
+}
+
 #[derive(thiserror::Error, Debug)]
 enum VoteError {
     #[error("Bad request: {0}")]
     BadRequest(#[from] BadVoteRequestError),
     #[error("Internal error: {0}")]
     Internal(#[from] InternalError)
+}
+
+impl IntoResponse for VoteError {
+    fn into_response(self) -> Response {
+        match self {
+            VoteError::BadRequest(error) => error.into_response(),
+            VoteError::Internal(error) => error.into_response()
+        }
+    }
 }
 
 impl From<SubxtError> for VoteError {
@@ -660,35 +738,6 @@ impl From<storage::Error> for VoteError {
     }
 }
 
-impl IntoResponse for VoteError {
-    fn into_response(self) -> Response {
-        match self {
-            VoteError::BadRequest(error) => {
-                let error_variant = match error {
-                    BadVoteRequestError::InvalidSignature => "InvalidSignature",
-                    BadVoteRequestError::ChainMismatch => "ChainMismatch",
-                    BadVoteRequestError::NotMember => "NotMember",
-                    BadVoteRequestError::VotedOutsideGlove => "VotedOutsideGlove",
-                    BadVoteRequestError::PollNotOngoing => "PollNotOngoing",
-                    BadVoteRequestError::PollAlreadyMixed => "PollAlreadyMixed",
-                    BadVoteRequestError::InsufficientBalance => "InsufficientBalance"
-                }.to_string();
-                (
-                    StatusCode::BAD_REQUEST,
-                    Json(BadRequestResponse { error: error_variant, description: error.to_string() })
-                ).into_response()
-            },
-            VoteError::Internal(error) => {
-                warn!("Error with vote request: {:?}", error);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Internal server error".to_string()
-                ).into_response()
-            }
-        }
-    }
-}
-
 #[derive(thiserror::Error, Debug)]
 enum BadRemoveVoteRequestError {
     #[error("Signature on signed vote request is invalid")]
@@ -699,12 +748,35 @@ enum BadRemoveVoteRequestError {
     PollAlreadyMixed
 }
 
+impl IntoResponse for BadRemoveVoteRequestError {
+    fn into_response(self) -> Response {
+        let error_variant = match self {
+            BadRemoveVoteRequestError::InvalidSignature => "InvalidSignature",
+            BadRemoveVoteRequestError::NotMember => "NotMember",
+            BadRemoveVoteRequestError::PollAlreadyMixed => "PollAlreadyMixed"
+        }.to_string();
+        (
+            StatusCode::BAD_REQUEST,
+            Json(BadRequestResponse { error: error_variant, description: self.to_string() })
+        ).into_response()
+    }
+}
+
 #[derive(thiserror::Error, Debug)]
 enum RemoveVoteError {
     #[error("Bad request: {0}")]
     BadRequest(#[from] BadRemoveVoteRequestError),
     #[error("Internal error: {0}")]
     Internal(#[from] InternalError)
+}
+
+impl IntoResponse for RemoveVoteError {
+    fn into_response(self) -> Response {
+        match self {
+            RemoveVoteError::BadRequest(error) => error.into_response(),
+            RemoveVoteError::Internal(error) => error.into_response()
+        }
+    }
 }
 
 impl From<SubxtError> for RemoveVoteError {
@@ -722,33 +794,5 @@ impl From<ProxyError> for RemoveVoteError {
 impl From<storage::Error> for RemoveVoteError {
     fn from(error: storage::Error) -> Self {
         RemoveVoteError::Internal(error.into())
-    }
-}
-
-impl IntoResponse for RemoveVoteError {
-    fn into_response(self) -> Response {
-        match self {
-            RemoveVoteError::BadRequest(error) => {
-                let error_variant = match error {
-                    BadRemoveVoteRequestError::InvalidSignature => "InvalidSignature",
-                    BadRemoveVoteRequestError::NotMember => "NotMember",
-                    BadRemoveVoteRequestError::PollAlreadyMixed => "PollAlreadyMixed"
-                }.to_string();
-                (
-                    StatusCode::BAD_REQUEST,
-                    Json(BadRequestResponse {
-                        error: error_variant,
-                        description: error.to_string()
-                    })
-                ).into_response()
-            },
-            RemoveVoteError::Internal(error) => {
-                warn!("Error with remove-vote request: {:?}", error);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Internal server error".to_string()
-                ).into_response()
-            }
-        }
     }
 }

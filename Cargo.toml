@@ -1,11 +1,19 @@
 [workspace]
-members = [ "common", "service", "enclave", "enclave-interface", "client", "client-interface" ]
+members = [
+    "common",
+    "service",
+    "enclave",
+    "enclave-interface",
+    "client",
+    "client-interface",
+    "stress-tool"
+]
 resolver = "2"
 
 [workspace.package]
 homepage = "https://projectglove.io/"
 repository = "https://github.com/projectglove/glove-monorepo/"
-version = "0.0.6"
+version = "0.0.7"
 
 [workspace.dependencies]
 anyhow = "1.0.86"
@@ -26,7 +34,9 @@ parity-scale-codec = "3.6.12"
 bigdecimal = "0.4.3"
 clap = { version = "4.5.4", features = ["derive"] }
 tokio = { version = "1.37.0" }
-reqwest = { version = "0.12.4", features = ["json"] }
+reqwest = { version = "0.12.4" }
+reqwest-middleware = "0.3.2"
+reqwest-retry = "0.6.0"
 strum = { version = "0.26.2", features = ["derive"] }
 axum = "0.7.5"
 itertools = "0.13.0"
@@ -45,3 +55,4 @@ sha2 = "0.10.8"
 flate2 = "1.0.30"
 aws-config = "1.5.4"
 aws-sdk-dynamodb = "1.38.0"
+aws-smithy-runtime-api = "1.7.1"
