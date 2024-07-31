@@ -26,7 +26,8 @@ jobs:
 
       - name: Install boto
         run: |
-          sudo pip3 install boto3 botocore
+           pipx inject ansible-core boto3
+           pipx inject ansible-core botocore
 
       - name: Run Ansible
         uses: dawidd6/action-ansible-playbook@v2
