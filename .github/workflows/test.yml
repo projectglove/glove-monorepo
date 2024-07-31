@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  ANSIBLE_CONFIG: devops/ansible/ansible.cfg
 
 jobs:
   build:
