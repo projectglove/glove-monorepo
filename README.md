@@ -24,7 +24,7 @@ Enclave Image successfully created.
 {
   "Measurements": {
     "HashAlgorithm": "Sha384 { ... }",
-    "PCR0": "2c655d5ba7f35e9e5208aff0670b9bee257cd9994cb957100fd8c9b4aa693a1d1c67f430d28c4f62a5372fe96d417d29",
+    "PCR0": "8ea5994148980786599301b4c583bf14d11fef3188e1496db2c7d3367a7abce2d96cee153434873ac7e26b21e1478270",
 ...
   }
 }
@@ -45,7 +45,7 @@ instructions on how to audit and verify the enclave code.
 
 > [!NOTE]
 > The enclave measurement for the latest build is
-> `2c655d5ba7f35e9e5208aff0670b9bee257cd9994cb957100fd8c9b4aa693a1d1c67f430d28c4f62a5372fe96d417d29`.
+> `8ea5994148980786599301b4c583bf14d11fef3188e1496db2c7d3367a7abce2d96cee153434873ac7e26b21e1478270`.
 
 # Glove mixing
 
@@ -148,8 +148,8 @@ unique identifier.
 
 #### `attestation_bundle`
 
-The attestation bundle of the enclave the service is using. This is a hex-encoded string (without the `0x` prefix),
-representing the [`AttestationBundle`](common/src/attestation.rs#L45) struct in
+The attestation bundle of the enclave the service is using. This is a hex string representing the
+[`AttestationBundle`](common/src/attestation.rs#L38) struct in
 [SCALE](https://docs.substrate.io/reference/scale-codec/) encoding.
 
 The attestation bundle is primarily used in Glove proofs when the enclave submits its mixed votes on-chain. It's
@@ -165,8 +165,8 @@ The version of the Glove service.
 {
   "proxy_account": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
   "network_name": "rococo",
-  "attestation_bundle": "6408de7737c59c238890533af25896a2c20608d8b380bb01029acb3927...",
-  "version": "0.0.7"
+  "attestation_bundle": "0x6408de7737c59c238890533af25896a2c20608d8b380bb01029acb3927...",
+  "version": "0.0.8"
 }
 ```
 
@@ -183,15 +183,15 @@ A JSON object with the following fields:
 
 #### `request`
 
-[SCALE-encoded](https://docs.substrate.io/reference/scale-codec/) [`VoteRequest`](common/src/lib.rs#L36) struct as a
-hex string (without the `0x` prefix).
+[SCALE-encoded](https://docs.substrate.io/reference/scale-codec/) [`VoteRequest`](common/src/lib.rs#L57) as a
+hex string.
 
 #### `signature`
 
 [SCALE-encoded](https://docs.substrate.io/reference/scale-codec/)
-[`MultiSignature`](https://docs.rs/sp-runtime/latest/sp_runtime/enum.MultiSignature.html) as a hex string (without the
-`0x` prefix). Signed by`VoteRequest.account`, the signature is of the `VoteRequest` in SCALE-encoded bytes, i.e. the
-`request` field without the hex-encoding.
+[`MultiSignature`](https://docs.rs/sp-runtime/latest/sp_runtime/enum.MultiSignature.html) as a hex string. The 
+signature is of the `VoteRequest` in SCALE-encoded bytes, i.e. the `request` field without the hex-encoding, signed by
+`VoteRequest.account`.
 
 #### Example
 
@@ -219,15 +219,15 @@ A JSON object with the following fields:
 
 #### `request`
 
-[SCALE-encoded](https://docs.substrate.io/reference/scale-codec/) [`RemoveVoteRequest`](client-interface/src/lib.rs#L374)
-struct as a hex string (without the `0x` prefix).
+[SCALE-encoded](https://docs.substrate.io/reference/scale-codec/) [`RemoveVoteRequest`](client-interface/src/lib.rs#L416)
+as a hex string.
 
 #### `signature`
 
 [SCALE-encoded](https://docs.substrate.io/reference/scale-codec/)
-[`MultiSignature`](https://docs.rs/sp-runtime/latest/sp_runtime/enum.MultiSignature.html) as a hex string (without the
-`0x` prefix). Signed by`RemoveVoteRequest.account`, the signature is of the `RemoveVoteRequest` in SCALE-encoded bytes,
-i.e. the `request` field without the hex-encoding.
+[`MultiSignature`](https://docs.rs/sp-runtime/latest/sp_runtime/enum.MultiSignature.html) as a hex string. The 
+signature is of the `RemoveVoteRequest` in SCALE-encoded bytes, i.e. the `request` field without the hex-encoding, 
+signed by `RemoveVoteRequest.account`,
 
 ### Response
 

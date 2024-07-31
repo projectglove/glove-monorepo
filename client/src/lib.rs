@@ -10,12 +10,14 @@ use reqwest::{Client, StatusCode, Url};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{Jitter, RetryTransientMiddleware};
 use reqwest_retry::policies::ExponentialBackoff;
+use sp_core::bytes::from_hex;
 use sp_core::crypto::AccountId32;
 use sp_core::Encode;
 use sp_runtime::MultiSignature;
 use strum::Display;
 use subxt::error::DispatchError;
 use subxt::Error::Runtime;
+use subxt_core::utils::to_hex;
 use subxt_signer::sr25519::Keypair;
 
 use client_interface::{account_to_subxt_multi_address, CallableSubstrateNetwork, is_glove_member, SignedRemoveVoteRequest, SubstrateNetwork};
@@ -245,10 +247,10 @@ async fn verify_vote(service_info: ServiceInfo, cmd: VerifyVoteCmd) -> Result<Su
     if !cmd.enclave_measurement.is_empty() {
         let enclave_match = cmd.enclave_measurement
             .iter()
-            .any(|str| hex::decode(str).ok() == Some(image_measurement.clone()));
+            .any(|str| from_hex(str).ok() == Some(image_measurement.clone()));
         if !enclave_match {
             bail!("Unknown enclave encountered in Glove proof ({})",
-                hex::encode(&image_measurement))
+                to_hex(&image_measurement))
         }
         println!("Vote mixed by VERIFIED Glove enclave: {:?} with {} and conviction {:?}",
                  verified_glove_proof.result.direction,
@@ -256,7 +258,7 @@ async fn verify_vote(service_info: ServiceInfo, cmd: VerifyVoteCmd) -> Result<Su
                  assigned_balance.conviction);
     } else {
         println!("Vote mixed by POSSIBLE Glove enclave ({}): {:?} with {} and conviction {:?}",
-                 hex::encode(&image_measurement),
+                 to_hex(&image_measurement),
                  verified_glove_proof.result.direction,
                  network.token.amount(assigned_balance.balance),
                  assigned_balance.conviction);
@@ -266,7 +268,7 @@ async fn verify_vote(service_info: ServiceInfo, cmd: VerifyVoteCmd) -> Result<Su
                  verified_glove_proof.attested_data.version,
                  env!("CARGO_PKG_REPOSITORY"));
         println!();
-        println!("And then verify 'PCR0' output is '{}':", hex::encode(&image_measurement));
+        println!("And then verify 'PCR0' output is '{}':", to_hex(&image_measurement));
         println!("./build.sh");
     }
 
@@ -300,7 +302,7 @@ fn info(service_info: ServiceInfo) -> Result<SuccessOutput> {
     let ab = &service_info.attestation_bundle;
     let enclave_info = match ab.verify() {
         Ok(EnclaveInfo::Nitro(enclave_info)) => {
-            &format!("AWS Nitro Enclave ({})", hex::encode(enclave_info.image_measurement))
+            &format!("AWS Nitro Enclave ({})", to_hex(enclave_info.image_measurement))
         },
         Err(attestation::Error::InsecureMode) => match ab.attestation {
             Attestation::Nitro(_) => "Debug AWS Nitro Enclave (INSECURE)",
@@ -312,7 +314,7 @@ fn info(service_info: ServiceInfo) -> Result<SuccessOutput> {
     println!("Glove proxy account: {}", service_info.proxy_account);
     println!("Enclave:             {}", enclave_info);
     println!("Substrate Network:   {}", service_info.network_name);
-    println!("Genesis hash:        {}", hex::encode(ab.attested_data.genesis_hash));
+    println!("Genesis hash:        {}", to_hex(ab.attested_data.genesis_hash));
 
     Ok(SuccessOutput::None)
 }

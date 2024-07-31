@@ -129,16 +129,8 @@ enum EnclaveMode {
     Mock
 }
 
-// TODO Test what an actual limit is on batched votes
-// TODO Load test with ~100 accounts voting on a single poll
 // TODO Probably need to specify API key for subscan
 // TODO Sign the enclave image
-
-// TODO Deal with RPC disconnect:
-//  2024-06-19T11:41:42.195924Z  WARN request{method=POST uri=/vote version=HTTP/1.1}: service: Subxt(Rpc(ClientError(RestartNeeded(Transport(connection closed
-//  Caused by:
-//  connection closed)))))
-
 // TODO Permantely ban accounts which vote directly
 // TODO Endpoint for poll end time and other info?
 
@@ -467,7 +459,6 @@ async fn mix_votes(context: &GloveContext, poll_index: u32) {
             Ok(true) => continue,
             Ok(false) => break,
             Err(mixing_error) => {
-                // TODO Reconnect on NotConnected IO error: Io(Os { code: 107, kind: NotConnected, message: "Transport endpoint is not connected" })
                 warn!("Error mixing votes: {:?}", mixing_error);
                 break;
             }
