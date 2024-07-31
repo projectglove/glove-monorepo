@@ -6,11 +6,15 @@ on:
     branch:
       - "devops/fix*"
 
+permissions:
+  id-token: write
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  Ansible:
     runs-on: ubuntu-latest
 
     steps:
@@ -35,9 +39,6 @@ jobs:
           role-to-assume: arn:aws:iam::381491931967:oidc-provider/token.actions.githubusercontent.com
           role-session-name: deploy-role-session
           aws-region: us-east-2
-          permissions:
-            id-token: write
-            contents: read
 
       - name: Run Ansible
         uses: dawidd6/action-ansible-playbook@v2
