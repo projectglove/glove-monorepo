@@ -8,7 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-#  ANSIBLE_CONFIG: /home/runner/work/glove-monorepo/glove-monorepo/devops/ansible/ansible.cfg
 
 jobs:
   build:
@@ -30,9 +29,12 @@ jobs:
            pipx inject ansible-core boto3
            pipx inject ansible-core botocore
 
-           #      - name: Output
-           #        run: |
-           #          echo $ANSIBLE_CONFIG
+      - name: configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          role-to-assume: arn:aws:iam::381491931967:oidc-provider/token.actions.githubusercontent.com
+          role-session-name: deploy-role-session
+          aws-region: us-east-2
 
       - name: Run Ansible
         uses: dawidd6/action-ansible-playbook@v2
