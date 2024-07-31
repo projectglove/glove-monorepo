@@ -29,6 +29,9 @@ jobs:
         run: |
            pipx inject ansible-core boto3
            pipx inject ansible-core botocore
+      - name: Output
+        run: |
+          echo $ANSIBLE_CONFIG
 
       - name: Run Ansible
         uses: dawidd6/action-ansible-playbook@v2
