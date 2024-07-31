@@ -8,8 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  ANSIBLE_CONFIG: /home/runner/work/glove-monorepo/glove-
-monorepo/devops/ansible/ansible.cfg
+  ANSIBLE_CONFIG: /home/runner/work/glove-monorepo/glove-monorepo/devops/ansible/ansible.cfg
 
 jobs:
   build:
