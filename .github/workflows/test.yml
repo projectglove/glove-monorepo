@@ -8,7 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  ANSIBLE_CONFIG: /home/runner/work/glove-monorepo/glove-monorepo/devops/ansible/ansible.cfg
+#  ANSIBLE_CONFIG: /home/runner/work/glove-monorepo/glove-monorepo/devops/ansible/ansible.cfg
 
 jobs:
   build:
@@ -29,9 +29,10 @@ jobs:
         run: |
            pipx inject ansible-core boto3
            pipx inject ansible-core botocore
-      - name: Output
-        run: |
-          echo $ANSIBLE_CONFIG
+
+           #      - name: Output
+           #        run: |
+           #          echo $ANSIBLE_CONFIG
 
       - name: Run Ansible
         uses: dawidd6/action-ansible-playbook@v2
