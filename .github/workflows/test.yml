@@ -38,6 +38,9 @@ jobs:
         with:
           playbook: glove.yml
           directory: devops/ansible
+          configuration: |
+            [defaults]
+            inventory = inventory_aws_ec2.yml
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           options: |
             --inventory inventory_aws_ec2.yml
