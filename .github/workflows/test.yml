@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    branch:
+      - "devops/fix*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: ./build.sh
+
+      - name: Service and enclave artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: glove-service
+          path: |
+            target/release/service
+            target/release/glove.eif
+
+      - name: Enclave measurement artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: enclave_measurement
+          path: target/release/enclave_measurement.txt
+
+      - name: Adding measurement to summary
+        run: |
+          echo '### Enclave Image Measurement' >> $GITHUB_STEP_SUMMARY
+          cat target/release/enclave_measurement.txt >> $GITHUB_STEP_SUMMARY
+
+      - name: Make release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/release/service
+            target/release/glove.eif
+          make_latest: true
+
+      - name: Install Ansible
+        run: |
+          sudo apt update
+          sudo apt install software-properties-common
+          sudo add-apt-repository --yes --update ppa:ansible/ansible
+          sudo apt install ansible
+
+      - name: Install boto
+        run: |
+          sudo pip3 install boto3 botocore
+
+      - name: Run Ansible
+        uses: dawidd6/action-ansible-playbook@v2
+        with:
+          playbook: glove.yml
+          directory: devops/ansible
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          options: |
+            --inventory hosts.ini
