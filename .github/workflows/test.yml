@@ -47,7 +47,7 @@ jobs:
           SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
           mkdir ~/.ssh
-          chmo 700 ~/.ssh
+          chmod 700 ~/.ssh
           echo $SSH_KEY > ~/.ssh/glove.prv
           chmod 600 ~/.ssh/glove.prv
 
