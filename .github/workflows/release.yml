@@ -53,11 +53,28 @@ jobs:
           sudo add-apt-repository --yes --update ppa:ansible/ansible
           sudo apt install ansible
 
+      - name: Install boto
+        run: |
+           pipx inject ansible-core boto3
+           pipx inject ansible-core botocore
+
+      - name: configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          audience: sts.amazonaws.com.
+          role-to-assume: arn:aws:iam::381491931967:role/GitHubAction-EC2-RO
+          role-session-name: deploy-role-session
+          aws-region: us-east-2
+
+
       - name: Run Ansible
         uses: dawidd6/action-ansible-playbook@v2
         with:
           playbook: glove.yml
           directory: devops/ansible
+          configuration: |
+            [defaults]
+            inventory = inventory_aws_ec2.yml
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           options: |
-            --inventory hosts.ini
+            --inventory inventory_aws_ec2.yml
