@@ -41,16 +41,16 @@ jobs:
           role-session-name: deploy-role-session
           aws-region: us-east-2
 
-      - name: Prepare ssh key
-        shell: bash
-        env:
-          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-        run: |
-          mkdir ~/.ssh
-          chmod 700 ~/.ssh
-          echo $SSH_KEY > ~/.ssh/glove.prv
-          chmod 600 ~/.ssh/glove.prv
-
+            #      - name: Prepare ssh key
+            #        shell: bash
+            #        env:
+            #          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+            #        run: |
+            #          mkdir ~/.ssh
+            #          chmod 700 ~/.ssh
+            #          echo $SSH_KEY > ~/.ssh/glove.prv
+            #          chmod 600 ~/.ssh/glove.prv
+            #
       - name: Run Ansible
         uses: dawidd6/action-ansible-playbook@v2
         with:
