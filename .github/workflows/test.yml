@@ -46,7 +46,9 @@ jobs:
         env:
           SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
-          echo $SSH_KEY >> ~/.ssh/glove.prv
+          mkdir ~/.ssh
+          chmo 700 ~/.ssh
+          echo $SSH_KEY > ~/.ssh/glove.prv
           chmod 600 ~/.ssh/glove.prv
 
       - name: Run Ansible
