@@ -14,15 +14,17 @@ use common::ExtrinsicLocation;
 
 #[derive(Clone)]
 pub struct Subscan {
-    http_client: reqwest::Client,
     network: String,
+    api_key: Option<String>,
+    http_client: reqwest::Client,
 }
 
 impl Subscan {
-    pub fn new(network: String) -> Self {
+    pub fn new(network: String, api_key: Option<String>) -> Self {
         Self {
-            http_client: reqwest::Client::new(),
             network,
+            api_key,
+            http_client: reqwest::Client::new(),
         }
     }
 
@@ -87,8 +89,13 @@ impl Subscan {
         end_point: &str,
         request: &(impl Serialize + ?Sized)
     ) -> Result<(HeaderMap, Resp), Error> {
-        let http_response = self.http_client
-            .post(format!("https://{}.api.subscan.io/api/scan/{}", self.network, end_point))
+        let request_builder = self.http_client
+            .post(format!("https://{}.api.subscan.io/api/scan/{}", self.network, end_point));
+        let request_builder = match &self.api_key {
+            Some(api_key) => request_builder.header("X-API-Key", api_key),
+            None => request_builder
+        };
+        let http_response = request_builder
             .json(&request)
             .send().await?;
         let headers = http_response.headers().clone();

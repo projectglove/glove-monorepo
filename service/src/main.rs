@@ -74,6 +74,10 @@ struct Args {
     #[arg(long, verbatim_doc_comment)]
     node_endpoint: String,
 
+    /// API key to use when querying Subscan.
+    #[arg(long, verbatim_doc_comment)]
+    subscan_api_key: Option<String>,
+
     /// The storage to use for the service.
     #[clap(subcommand, verbatim_doc_comment)]
     storage: Storage,
@@ -129,7 +133,6 @@ enum EnclaveMode {
     Mock
 }
 
-// TODO Probably need to specify API key for subscan
 // TODO Sign the enclave image
 // TODO Permantely ban accounts which vote directly
 // TODO Endpoint for poll end time and other info?
@@ -196,7 +199,7 @@ async fn main() -> anyhow::Result<()> {
         state: GloveState::default()
     });
 
-    let subscan = Subscan::new(glove_context.network.network_name.clone());
+    let subscan = Subscan::new(glove_context.network.network_name.clone(), args.subscan_api_key);
     if args.regular_mix {
         warn!("Regular mixing of votes is enabled. This is not suitable for production.");
     } else {
@@ -532,9 +535,6 @@ async fn submit_glove_result_on_chain(
     signed_requests: &Vec<SignedVoteRequest>,
     signed_glove_result: SignedGloveResult
 ) -> Result<(), ProxyError> {
-    // TODO Should the enclave produce the extrinic calls structs? It would prove the enclave
-    //  intiated the abstain votes. Otherwise, users are trusting the host service is correctly
-    //  interpreting the enclave's None mixing output.
     let mut batched_calls = Vec::with_capacity(signed_requests.len() + 1);
 
     let glove_result = &signed_glove_result.result;

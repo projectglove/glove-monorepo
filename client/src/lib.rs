@@ -33,7 +33,7 @@ use common::{attestation, Conviction, SignedVoteRequest, VoteRequest};
 use common::attestation::{Attestation, EnclaveInfo};
 use RuntimeError::Proxy;
 
-use crate::verify::{Error, try_verify_glove_result};
+use crate::verify::try_verify_glove_result;
 
 pub mod verify;
 
@@ -125,49 +125,7 @@ async fn vote(
     if response.status() != StatusCode::OK {
         bail!(response.text().await?)
     }
-    if cmd.await_glove_proof {
-        listen_for_glove_votes(&network, &cmd, nonce, &service_info.proxy_account).await?;
-    }
     return Ok(SuccessOutput::Voted { nonce });
-}
-
-// TODO Stop waiting when the poll is closed.
-async fn listen_for_glove_votes(
-    network: &CallableSubstrateNetwork,
-    vote_cmd: &VoteCmd,
-    nonce: u32,
-    proxy_account: &AccountId32
-) -> Result<()> {
-    network.subscribe_successful_extrinsics(|extrinsic, _| async move {
-        let verification_result = try_verify_glove_result(
-            &network,
-            &extrinsic,
-            proxy_account,
-            vote_cmd.poll_index,
-        ).await;
-        let verified_glove_proof = match verification_result {
-            Ok(None) => return Ok(()), // Not what we're looking for
-            Ok(Some(verified_glove_proof)) => verified_glove_proof,
-            Err(Error::Subxt(subxt_error)) => return Err(subxt_error.into()),
-            Err(error) => {
-                eprintln!("Error verifying Glove proof: {}", error);
-                return Ok(());
-            }
-        };
-        if let Some(balance) = verified_glove_proof.get_vote_balance(&network.account(), nonce) {
-            println!("Glove vote {:?} with balance {}",
-                     verified_glove_proof.result.direction, network.token.amount(balance));
-            if let Some(_) = &verified_glove_proof.enclave_info {
-                // TODO Check measurement
-            } else {
-                eprintln!("WARNING: Secure enclave wasn't used");
-            }
-        } else {
-            eprintln!("WARNING: Received Glove proof for poll, but vote was not included");
-        }
-        Ok(())
-    }).await?;
-    Ok(())
 }
 
 async fn remove_vote(
@@ -203,7 +161,7 @@ async fn verify_vote(service_info: ServiceInfo, cmd: VerifyVoteCmd) -> Result<Su
     let Some(poll_info) = network.get_poll(cmd.poll_index).await? else {
         bail!("Poll does not exist")
     };
-    let subscan = Subscan::new(service_info.network_name.clone());
+    let subscan = Subscan::new(service_info.network_name.clone(), cmd.subscan_api_key);
     let votes = subscan.get_votes(cmd.poll_index, Some(cmd.account.clone())).await?;
     let Some(vote) = votes.first() else {
         if matches!(poll_info, ReferendumInfoFor::Ongoing(_)) {
@@ -407,10 +365,7 @@ struct VoteCmd {
     balance: BigDecimal,
     /// The vote conviction multiplier
     #[arg(long, short, verbatim_doc_comment, default_value_t = 0)]
-    conviction: u8,
-    /// Wait for the vote to be included in the Glove mixing process and confirmation received.
-    #[arg(long, short, verbatim_doc_comment)]
-    await_glove_proof: bool
+    conviction: u8
 }
 
 impl VoteCmd {
@@ -455,7 +410,10 @@ struct VerifyVoteCmd {
     enclave_measurement: Vec<String>,
     /// Optional, the nonce value used in the most recent vote request.
     #[arg(long, short, verbatim_doc_comment)]
-    nonce: Option<u32>
+    nonce: Option<u32>,
+    /// Optional, API key to use with Subscan
+    #[arg(long, short, verbatim_doc_comment)]
+    subscan_api_key: Option<String>
 }
 
 #[derive(Debug, Parser)]
