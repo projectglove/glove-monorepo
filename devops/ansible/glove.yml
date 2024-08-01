@@ -1,6 +1,6 @@
 ---
 - hosts: tag_Glove
   become: true
-  gather_facts: false
+  gather_facts: true
   roles:
     - glove
