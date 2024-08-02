@@ -27,7 +27,6 @@ pub struct VerifiedGloveProof {
     pub attested_data: AttestedData
 }
 
-// TODO API for checking EnclaveInfo for expected measurements
 impl VerifiedGloveProof {
     pub fn get_assigned_balance(&self, account: &AccountId32) -> Option<AssignedBalance> {
         self.result
@@ -246,5 +245,3 @@ pub enum Error {
     #[error("Invalid attestation: {0}")]
     Attestation(#[from] attestation::Error)
 }
-
-// TODO Tests

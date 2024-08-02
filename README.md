@@ -102,10 +102,13 @@ Make sure the `service` binary and the `glove.eif` file are in the same director
 will both be in `target/release`:
 
 ```shell
-target/release/service --address=<LISTEN> --proxy-secret-phrase=<SECRET PHRASE> --node-endpoint=<URL> dynamodb --table-name=<GLOVE TABLE>
+target/release/service --address=<LISTEN> --proxy-secret-phrase=<SECRET PHRASE> --node-endpoint=<URL> --subscan-api-key=<API KEY> dynamodb --table-name=<GLOVE TABLE>
 ```
 
-To understand what these arguments mean and others, you will need to first read the help with `--help`.
+The service makes use of [Subscan](https://support.subscan.io/) and it is recommended an API key be provided, though 
+not required.
+
+Full documenation of the arguments, along with other flags, can be found with `--help`.
 
 You can check the enclave is running with:
 

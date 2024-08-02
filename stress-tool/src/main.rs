@@ -167,7 +167,7 @@ async fn extrinsic(extrinsic_location: ExtrinsicLocation, args: Args) -> Result<
         .send().await?
         .error_for_status()?
         .json::<ServiceInfo>().await?;
-    let subscan = Subscan::new(service_info.network_name);
+    let subscan = Subscan::new(service_info.network_name, None);
     match subscan.get_extrinsic(extrinsic_location).await? {
         Some(extrinsic) => println!("{:#?}", extrinsic),
         None => bail!("Extrinsic not found")
