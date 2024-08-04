@@ -114,6 +114,7 @@ pub struct GloveContext {
     pub enclave_handle: EnclaveHandle,
     pub attestation_bundle: AttestationBundle,
     pub network: CallableSubstrateNetwork,
+    pub exclude_tracks: HashSet<u16>,
     pub regular_mix_enabled: bool,
     pub state: GloveState,
 }
