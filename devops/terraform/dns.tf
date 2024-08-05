@@ -29,6 +29,14 @@ resource "aws_route53_record" "validation_test" {
   zone_id         = aws_route53_zone.test.zone_id
 }
 
+resource "aws_route53_record" "vm" {
+  zone_id = aws_route53_zone.test.zone_id
+  name    = "vm.test.projectglove.io"
+  type    = "A"
+  ttl     = 300
+  records = [aws_instance.enclave.public_ip]
+}
+
 resource "aws_acm_certificate_validation" "test" {
   certificate_arn         = aws_acm_certificate.test.arn
   validation_record_fqdns = [for record in aws_route53_record.validation_test : record.fqdn]
