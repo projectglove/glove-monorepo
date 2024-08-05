@@ -1,6 +1,6 @@
 ---
 - hosts: tag_Glove
   become: true
-#  user: ec2-user
+  gather_facts: true
   roles:
     - glove

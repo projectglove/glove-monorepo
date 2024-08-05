@@ -1,50 +1,25 @@
-name: Release
+---
+name: Test
 
 on:
   push:
-    tags:
-      - "v*.*.*"
+    branch:
+      - "devops/fix*"
+
+permissions:
+  id-token: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  Ansible:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Build
-        run: ./build.sh
-
-      - name: Service and enclave artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: glove-service
-          path: |
-            target/release/service
-            target/release/glove.eif
-
-      - name: Enclave measurement artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: enclave_measurement
-          path: target/release/enclave_measurement.txt
-
-      - name: Adding measurement to summary
-        run: |
-          echo '### Enclave Image Measurement' >> $GITHUB_STEP_SUMMARY
-          cat target/release/enclave_measurement.txt >> $GITHUB_STEP_SUMMARY
-
-      - name: Make release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            target/release/service
-            target/release/glove.eif
-          make_latest: true
 
       - name: Install Ansible
         run: |
@@ -66,7 +41,16 @@ jobs:
           role-session-name: deploy-role-session
           aws-region: us-east-2
 
-
+            #      - name: Prepare ssh key
+            #        shell: bash
+            #        env:
+            #          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+            #        run: |
+            #          mkdir ~/.ssh
+            #          chmod 700 ~/.ssh
+            #          echo $SSH_KEY > ~/.ssh/glove.prv
+            #          chmod 600 ~/.ssh/glove.prv
+            #
       - name: Run Ansible
         uses: dawidd6/action-ansible-playbook@v2
         with:
