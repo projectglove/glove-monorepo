@@ -1,9 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Context};
+use anyhow::{anyhow, bail, Context};
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::delete_item::DeleteItemError;
 use aws_sdk_dynamodb::operation::put_item::PutItemError;
@@ -85,6 +85,13 @@ struct Args {
     /// Which mode the Glove enclave should run in.
     #[arg(long, value_enum, verbatim_doc_comment, default_value_t = EnclaveMode::Nitro)]
     enclave_mode: EnclaveMode,
+
+    /// List of track IDs, seperated by comma, for which polls are not allowed to be voted on.
+    ///
+    /// See https://wiki.polkadot.network/docs/learn-polkadot-opengov-origins#origins-and-tracks-info
+    /// for list of track IDs.
+    #[arg(long, verbatim_doc_comment, value_delimiter = ',')]
+    exclude_tracks: Vec<u16>,
 
     /// If specified, will mix vote requests at a regular interval.
     ///
@@ -195,9 +202,12 @@ async fn main() -> anyhow::Result<()> {
         enclave_handle,
         attestation_bundle,
         network,
+        exclude_tracks: args.exclude_tracks.into_iter().collect(),
         regular_mix_enabled: args.regular_mix,
         state: GloveState::default()
     });
+
+    check_excluded_tracks(&glove_context).await?;
 
     let subscan = Subscan::new(glove_context.network.network_name.clone(), args.subscan_api_key);
     if args.regular_mix {
@@ -216,6 +226,30 @@ async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind(args.address).await?;
     info!("Listening for requests...");
     axum::serve(listener, router).await?;
+
+    Ok(())
+}
+
+async fn check_excluded_tracks(context: &Arc<GloveContext>) -> anyhow::Result<()> {
+    let track_infos = context.network.get_tracks()?;
+    let mut excluded_track_infos = HashMap::new();
+    for exclude_track_id in &context.exclude_tracks {
+        let track_info = track_infos.get(&exclude_track_id)
+            .ok_or_else(|| anyhow!("Excluded track {} not found", exclude_track_id))?;
+        excluded_track_infos.insert(exclude_track_id, &track_info.name);
+    }
+
+    info!("Excluded tracks: {:?}", excluded_track_infos);
+
+    for poll_index in context.storage.get_poll_indices().await? {
+        let Some(poll_info) = context.network.get_ongoing_poll(poll_index).await? else {
+            continue;
+        };
+        if excluded_track_infos.contains_key(&poll_info.track) {
+            warn!("Poll {} belongs to track {} which has been excluded. Existing vote requests \
+                will be mixed, but further requests will not be accepted.", poll_index, poll_info.track);
+        }
+    }
 
     Ok(())
 }
@@ -395,8 +429,11 @@ async fn vote(
     if request.genesis_hash != network.api.genesis_hash() {
         return Err(BadVoteRequestError::ChainMismatch.into());
     }
-    if network.get_ongoing_poll(request.poll_index).await?.is_none() {
+    let Some(poll_info) = network.get_ongoing_poll(request.poll_index).await? else {
         return Err(BadVoteRequestError::PollNotOngoing.into());
+    };
+    if context.exclude_tracks.contains(&poll_info.track) {
+        return Err(BadVoteRequestError::TrackNotAllowed.into());
     }
     if context.state.is_non_glove_voter(request.poll_index, &request.account).await {
         return Err(BadVoteRequestError::VotedOutsideGlove.into());
@@ -670,6 +707,8 @@ enum BadVoteRequestError {
     VotedOutsideGlove,
     #[error("Poll is not ongoing or does not exist")]
     PollNotOngoing,
+    #[error("Poll belongs to a track which is not allowed for voting")]
+    TrackNotAllowed,
     #[error("Votes for poll has already been mixed and submitted on-chain")]
     PollAlreadyMixed,
     #[error("Insufficient account balance for vote")]
@@ -684,6 +723,7 @@ impl IntoResponse for BadVoteRequestError {
             BadVoteRequestError::NotMember => "NotMember",
             BadVoteRequestError::VotedOutsideGlove => "VotedOutsideGlove",
             BadVoteRequestError::PollNotOngoing => "PollNotOngoing",
+            BadVoteRequestError::TrackNotAllowed => "TrackNotAllowed",
             BadVoteRequestError::PollAlreadyMixed => "PollAlreadyMixed",
             BadVoteRequestError::InsufficientBalance => "InsufficientBalance"
         }.to_string();
