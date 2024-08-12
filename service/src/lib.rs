@@ -58,7 +58,7 @@ impl VoterLookup {
                 Entry::Occupied(entry) => entry.get().clone(),
                 Entry::Vacant(entry) => {
                     if let Some(extrinsic) = subscan.get_extrinsic(vote.extrinsic_index).await? {
-                        entry.insert(extrinsic.account_display.map(|a| a.address)).clone()
+                        entry.insert(extrinsic.account_address()).clone()
                     } else {
                         warn!("Extrinsic not found: {:?}", vote.extrinsic_index);
                         entry.insert(None).clone()

@@ -10,13 +10,12 @@ use anyhow::{Context, Result};
 use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use serde::{Deserialize, Serialize};
 use sp_core::crypto::AccountId32;
-use sp_runtime::{MultiAddress, MultiSignature};
+use sp_runtime::MultiSignature;
 use ss58_registry::{Ss58AddressFormat, Ss58AddressFormatRegistry, Token};
 use subxt::Error as SubxtError;
 use subxt::ext::scale_decode::DecodeAsType;
 use subxt::utils::AccountId32 as SubxtAccountId32;
 use subxt_core::config::PolkadotConfig;
-use subxt_core::ext::sp_core::hexdisplay::AsBytesRef;
 use subxt_core::tx::payload::Payload;
 use subxt_signer::SecretUri;
 use subxt_signer::sr25519;
@@ -42,7 +41,6 @@ pub mod metadata {}
 pub mod subscan;
 
 pub type OnlineClient = subxt::OnlineClient<PolkadotConfig>;
-pub type Block = subxt::blocks::Block<PolkadotConfig, OnlineClient>;
 pub type ExtrinsicDetails = subxt::blocks::ExtrinsicDetails<PolkadotConfig, OnlineClient>;
 pub type ExtrinsicEvents = subxt::blocks::ExtrinsicEvents<PolkadotConfig>;
 pub type SubxtMultiAddressId32 = subxt::utils::MultiAddress<SubxtAccountId32, ()>;
@@ -84,33 +82,6 @@ impl SubstrateNetwork {
             .map(|token_registry| Token::from(*token_registry))
             .unwrap_or_else(|| Token { name: "ROC", decimals: 12 });
         Ok(Self { api, network_name, token })
-    }
-
-    pub async fn get_block(&self, block_number: u32) -> Result<Option<Block>, SubxtError> {
-        let block_hash = self.api
-            .storage()
-            .at_latest().await?
-            .fetch(&storage().system().block_hash(block_number)).await?;
-        match block_hash {
-            Some(block_hash) => Ok(Some(self.api.blocks().at(block_hash).await?)),
-            None => Ok(None)
-        }
-    }
-
-    // TODO The substrate node endpoints are proving to be very unreliable when it comes to looking
-    //  up old blocks. This is happening to both Rococo and Kusama. Replace uses of this function
-    //  with the equivalent subscan one.
-    pub async fn get_extrinsic(
-        &self,
-        location: ExtrinsicLocation
-    ) -> Result<Option<ExtrinsicDetails>, SubxtError> {
-        let Some(block) = self.get_block(location.block_number).await? else {
-            return Ok(None);
-        };
-        block.extrinsics().await?
-            .iter()
-            .nth(location.extrinsic_index as usize)
-            .transpose()
     }
 
     /// This is the equivalent to calling [subxt::error::DispatchError::decode_from] followed by
@@ -363,21 +334,6 @@ pub async fn is_glove_member(
     } else {
         Ok(false)
     }
-}
-
-pub fn account(extrinsic: &ExtrinsicDetails) -> Option<AccountId32> {
-    extrinsic.address_bytes().and_then(parse_multi_address)
-}
-
-pub fn parse_multi_address(bytes: &[u8]) -> Option<AccountId32> {
-    type MultiAddress32 = MultiAddress<AccountId32, u32>;
-
-    MultiAddress32::decode(&mut bytes.as_bytes_ref())
-        .ok()
-        .and_then(|address| match address {
-            MultiAddress::Id(account) => Some(account),
-            _ => None
-        })
 }
 
 // Annoyingly, subxt uses a different AccountId32 to sp-core.

@@ -24,7 +24,7 @@ Enclave Image successfully created.
 {
   "Measurements": {
     "HashAlgorithm": "Sha384 { ... }",
-    "PCR0": "8ea5994148980786599301b4c583bf14d11fef3188e1496db2c7d3367a7abce2d96cee153434873ac7e26b21e1478270",
+    "PCR0": "4d132e40ed8d6db60d01d0116c34a4a92914de73d668821b6e019b72ae152b1180ef7c8a378e6c1925fe2bcb31c0ec80",
 ...
   }
 }
@@ -45,7 +45,7 @@ instructions on how to audit and verify the enclave code.
 
 > [!NOTE]
 > The enclave measurement for the latest build is
-> `8ea5994148980786599301b4c583bf14d11fef3188e1496db2c7d3367a7abce2d96cee153434873ac7e26b21e1478270`.
+> `4d132e40ed8d6db60d01d0116c34a4a92914de73d668821b6e019b72ae152b1180ef7c8a378e6c1925fe2bcb31c0ec80`.
 
 # Glove mixing
 
