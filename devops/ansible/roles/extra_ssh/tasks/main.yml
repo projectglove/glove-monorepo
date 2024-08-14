@@ -1,0 +1,9 @@
+---
+- name: Set authorized key taken from file
+  ansible.posix.authorized_key:
+    user: ec2-user
+    state: present
+    key: "{{ lookup('file', item) }}"
+  loop:
+    - noah.pub
+    - shams.pub

@@ -1,0 +1,6 @@
+---
+- hosts: tag_Glove
+  become: true
+  gather_facts: true
+  roles:
+    - extra_ssh
