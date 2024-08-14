@@ -412,7 +412,6 @@ async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
 
 // TODO Reject for zero balance
 // TODO Reject if new vote request reaches max batch size limit for poll
-// TODO Reject polls for certain tracks based on config
 async fn vote(
     State(context): State<Arc<GloveContext>>,
     Json(signed_request): Json<SignedVoteRequest>

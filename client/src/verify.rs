@@ -1,23 +1,14 @@
 use std::collections::HashMap;
 
 use sp_core::crypto::AccountId32;
-use subxt::Error as SubxtError;
 
 use attestation::EnclaveInfo;
 use AttestationBundleLocation::SubstrateRemark;
-use client_interface::{account, ExtrinsicDetails, SubstrateNetwork};
-use client_interface::metadata::runtime_types;
-use client_interface::metadata::runtime_types::frame_system::pallet::Call as SystemCall;
-use client_interface::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
-use client_interface::metadata::runtime_types::pallet_conviction_voting::vote::AccountVote;
-use client_interface::metadata::runtime_types::pallet_proxy::pallet::Call as ProxyCall;
-use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeCall;
-use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeCall::ConvictionVoting;
-use client_interface::metadata::system::calls::types::Remark;
-use client_interface::metadata::utility::calls::types::Batch;
+use client_interface::{subscan, SubstrateNetwork};
+use client_interface::subscan::{ExtrinsicDetail, HexString, MultiAddress, RuntimeCall, SplitAbstainAccountVote, Subscan};
 use common::{AssignedBalance, attestation, BASE_AYE, Conviction, ExtrinsicLocation, GloveResult, VoteDirection};
 use common::attestation::{AttestationBundle, AttestationBundleLocation, AttestedData, GloveProof, GloveProofLite};
-use runtime_types::pallet_conviction_voting::vote::Vote;
+use subscan::AccountVote;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct VerifiedGloveProof {
@@ -47,11 +38,15 @@ impl VerifiedGloveProof {
 /// A result of `Ok(None)` means the extrinsic was not a Glove result.
 pub async fn try_verify_glove_result(
     network: &SubstrateNetwork,
-    extrinsic: &ExtrinsicDetails,
-    proxy_account: &AccountId32,
+    subscan: &Subscan,
+    vote_extrinsic_location: ExtrinsicLocation,
+    proxy_account: AccountId32,
     poll_index: u32
 ) -> Result<Option<VerifiedGloveProof>, Error> {
-    let Some((glove_proof_lite, batch)) = parse_glove_proof_lite(extrinsic, proxy_account)? else {
+    let Some(extrinsic) = subscan.get_extrinsic(vote_extrinsic_location).await? else {
+        return Err(Error::ExtrinsicNotFound(vote_extrinsic_location));
+    };
+    let Some((glove_proof_lite, batch)) = parse_glove_proof_lite(extrinsic, proxy_account) else {
         // This extrinsic is not a Glove proof
         return Ok(None);
     };
@@ -63,8 +58,8 @@ pub async fn try_verify_glove_result(
         return Ok(None);
     }
 
-    let account_votes: HashMap<AccountId32, &AccountVote<u128>> = batch.calls
-        .iter()
+    let account_votes: HashMap<AccountId32, AccountVote> = batch
+        .into_iter()
         .filter_map(|call| parse_and_validate_proxy_account_vote(call, glove_result.poll_index))
         .collect::<HashMap<_, _>>();
     // TODO Check for duplicate on-chain votes for the same account
@@ -72,7 +67,7 @@ pub async fn try_verify_glove_result(
     // Make sure each assigned balance from the Glove proof is accounted for on-chain.
     for assigned_balance in &glove_result.assigned_balances {
         account_votes.get(&assigned_balance.account)
-            .filter(|&&account_vote| {
+            .filter(|&account_vote| {
                 is_account_vote_consistent(account_vote, glove_result.direction, assigned_balance)
             })
             .ok_or(Error::InconsistentVotes)?;
@@ -84,7 +79,7 @@ pub async fn try_verify_glove_result(
 
     let attestation_bundle = match glove_proof_lite.attestation_location {
         SubstrateRemark(remark_location) =>
-            get_attestation_bundle_from_remark(network, remark_location).await?
+            get_attestation_bundle_from_remark(subscan, remark_location).await?
     };
 
     if attestation_bundle.attested_data.genesis_hash != network.api.genesis_hash() {
@@ -110,58 +105,60 @@ pub async fn try_verify_glove_result(
 }
 
 fn parse_glove_proof_lite(
-    extrinsic: &ExtrinsicDetails,
-    proxy_account: &AccountId32
-) -> Result<Option<(GloveProofLite, Batch)>, SubxtError> {
-    let from_proxy = account(extrinsic).filter(|account| account == proxy_account).is_some();
-    if !from_proxy {
-        return Ok(None);
+    extrinsic: ExtrinsicDetail,
+    proxy_account: AccountId32
+) -> Option<(GloveProofLite, Vec<RuntimeCall>)> {
+    if extrinsic.account_address() != Some(proxy_account) {
+        return None;
     }
 
-    let Some(batch) = extrinsic.as_extrinsic::<Batch>()? else {
-        return Ok(None);
+    let Some(calls) = extrinsic.get_param_as::<Vec<RuntimeCall>>("calls") else {
+        return None;
     };
 
-    let remarks = batch.calls
-        .iter()
-        .filter_map(|call| match call {
-            RuntimeCall::System(SystemCall::remark { remark }) => Some(remark),
-            _ => None
-        })
+    let remarks = calls.iter()
+        .filter(|call| call.is_extrinsic("system", "remark"))
+        .filter_map(|call| call.get_param_as::<HexString>("remark"))
         .collect::<Vec<_>>();
 
     // Expecting there to be exactly one remark call
-    let &[remark] = remarks.as_slice() else {
-        return Ok(None);
+    let [remark] = remarks.as_slice() else {
+        return None;
     };
 
-    Ok(GloveProofLite::decode_envelope(remark).map(|proof| (proof, batch)).ok())
+    GloveProofLite::decode_envelope(&remark).map(|proof| (proof, calls)).ok()
 }
 
 fn parse_and_validate_proxy_account_vote(
-    call: &RuntimeCall,
+    batched_call: RuntimeCall,
     expected_poll_index: u32,
-) -> Option<(AccountId32, &AccountVote<u128>)> {
-    let RuntimeCall::Proxy(proxy_call) = call else {
+) -> Option<(AccountId32, AccountVote)> {
+    if !batched_call.is_extrinsic("proxy", "proxy") {
+        return None;
+    }
+    let Some(MultiAddress::Id(real)) = batched_call.get_param_as::<MultiAddress>("real") else {
         return None;
     };
-    let ProxyCall::proxy { real, force_proxy_type: _, call: proxied_call } = proxy_call else {
+    let Some(proxied_call) = batched_call.get_param_as::<RuntimeCall>("call") else {
         return None;
     };
-    let subxt_core::utils::MultiAddress::Id(real_account) = real else {
+    if !proxied_call.is_extrinsic("convictionvoting", "vote") {
+        return None;
+    }
+    let Some(poll_index) = proxied_call.get_param_as::<u32>("poll_index") else {
         return None;
     };
-    let ConvictionVoting(ConvictionVotingCall::vote { poll_index, ref vote }) = **proxied_call else {
+    let Some(vote) = proxied_call.get_param_as::<AccountVote>("vote") else {
         return None;
     };
     if expected_poll_index != poll_index {
         return None;
     }
-    Some((real_account.0.into(), vote))
+    Some((real.value, vote))
 }
 
 fn is_account_vote_consistent(
-    account_vote: &AccountVote<u128>,
+    account_vote: &AccountVote,
     direction: VoteDirection,
     assigned_balance: &AssignedBalance
 ) -> bool {
@@ -180,14 +177,14 @@ fn is_account_vote_consistent(
     }
 }
 
-fn parse_standard_account_vote(vote: &AccountVote<u128>) -> Option<(bool, u128, Conviction)> {
-    let AccountVote::Standard { vote: Vote(direction), balance } = vote else {
+fn parse_standard_account_vote(vote: &AccountVote) -> Option<(bool, u128, Conviction)> {
+    let AccountVote::Standard(standard) = vote else {
         return None;
     };
-    if *direction >= BASE_AYE {
-        Some((true, *balance, parse_conviction(*direction - BASE_AYE)?))
+    if standard.vote >= BASE_AYE {
+        Some((true, standard.balance, parse_conviction(standard.vote - BASE_AYE)?))
     } else {
-        Some((false, *balance, parse_conviction(*direction)?))
+        Some((false, standard.balance, parse_conviction(standard.vote)?))
     }
 }
 
@@ -204,36 +201,37 @@ fn parse_conviction(offset: u8) -> Option<Conviction> {
     }
 }
 
-fn parse_abstain_account_vote(account_vote: &AccountVote<u128>) -> Option<u128> {
+fn parse_abstain_account_vote(account_vote: &AccountVote) -> Option<u128> {
     match account_vote {
-        AccountVote::SplitAbstain { aye: 0, nay: 0, abstain } => Some(*abstain),
+        AccountVote::SplitAbstain(SplitAbstainAccountVote { aye: 0, nay: 0, abstain }) =>
+            Some(*abstain),
         _ => None
     }
 }
 
 async fn get_attestation_bundle_from_remark(
-    network: &SubstrateNetwork,
+    subscan: &Subscan,
     remark_location: ExtrinsicLocation
 ) -> Result<AttestationBundle, Error> {
-    network.get_extrinsic(remark_location).await?
-        .ok_or_else(|| Error::ExtrinsicNotFound(remark_location))?
-        .as_extrinsic::<Remark>()?
+    let extrinsic_detail = subscan.get_extrinsic(remark_location).await?
+        .ok_or_else(|| Error::ExtrinsicNotFound(remark_location))?;
+    if !extrinsic_detail.is_extrinsic("system", "remark") {
+        return Err(Error::InvalidAttestationBundle(
+            format!("Extrinsic at location {:?} is not a Remark", remark_location))
+        );
+    }
+    extrinsic_detail.get_param_as::<HexString>("remark")
+        .and_then(|hex| AttestationBundle::decode_envelope(&mut hex.as_slice()).ok())
         .ok_or_else(|| Error::InvalidAttestationBundle(
-            format!("Extrinsic at location {:?} is not a Remark", remark_location)
+            format!("Extrinsic at location {:?} does not contain a valid AttestationBundle",
+                    remark_location)
         ))
-        .and_then(|remark| {
-            AttestationBundle::decode_envelope(&remark.remark).map_err(|scale_error| {
-                Error::InvalidAttestationBundle(
-                    format!("Error decoding attestation bundle: {}", scale_error)
-                )
-            })
-        })
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("Subxt error: {0}")]
-    Subxt(#[from] SubxtError),
+    #[error("Subscan error: {0}")]
+    Subscan(#[from] subscan::Error),
     #[error("Votes are inconsistent with the Glove proof")]
     InconsistentVotes,
     #[error("Glove proof is for different chain")]
@@ -244,4 +242,41 @@ pub enum Error {
     InvalidAttestationBundle(String),
     #[error("Invalid attestation: {0}")]
     Attestation(#[from] attestation::Error)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use sp_core::bytes::from_hex;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn verification_of_sample_glove_result() {
+        let network = SubstrateNetwork::connect("wss://rococo-rpc.polkadot.io".into()).await.unwrap();
+        let subscan = Subscan::new("rococo".into(), None);
+        let verification_result = try_verify_glove_result(
+            &network,
+            &subscan,
+            ExtrinsicLocation { block_number: 11729890, extrinsic_index: 2 },
+            AccountId32::from_str("5E79AhCNFdcJJ1nWXepeib7BWRbacVbpKvRhcoyv8dRwrmQ3").unwrap(),
+            241
+        ).await.unwrap().unwrap();
+        assert_eq!(verification_result.result.assigned_balances.len(), 3);
+        let enclave_measuremnt = match &verification_result.enclave_info {
+            Some(EnclaveInfo::Nitro(info)) => Some(info.image_measurement.clone()),
+            None => None
+        };
+        assert_eq!(enclave_measuremnt, Some(from_hex("4d132e40ed8d6db60d01d0116c34a4a92914de73d668821b6e019b72ae152b1180ef7c8a378e6c1925fe2bcb31c0ec80").unwrap()));
+        let expected_balances = vec![
+            ("5CyppCnQKiuY9c22yjHbDTpCqeHzAt7GXQpFAURxycWTS8My", 33351321, 1586359369580),
+            ("5F3wWFE7TGhpqXhZy18soAa2VjVsfr21VC4PZP3ZuAfM8Dg5", 4072408713, 5727210208563),
+            ("5GdjoMMME46cTumexM7AJTzkEpPp1xxbXNguEDecNtf7kz2R", 177757542, 4525520421857)
+        ];
+        for (account, nonce, expected_balance) in expected_balances {
+            let account = AccountId32::from_str(account).unwrap();
+            assert_eq!(verification_result.get_vote_balance(&account, nonce).unwrap(), expected_balance);
+        }
+    }
 }

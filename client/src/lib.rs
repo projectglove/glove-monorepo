@@ -32,8 +32,7 @@ use Command::{Info, JoinGlove, LeaveGlove, RemoveVote, VerifyVote, Vote};
 use common::{attestation, Conviction, SignedVoteRequest, VoteRequest};
 use common::attestation::{Attestation, EnclaveInfo};
 use RuntimeError::Proxy;
-
-use crate::verify::try_verify_glove_result;
+use verify::try_verify_glove_result;
 
 pub mod verify;
 
@@ -170,13 +169,11 @@ async fn verify_vote(service_info: ServiceInfo, cmd: VerifyVoteCmd) -> Result<Su
             bail!("Poll is no longer active and Glove proxy did not vote")
         }
     };
-    let Some(extrinsic) = network.get_extrinsic(vote.extrinsic_index).await? else {
-        bail!("Unable to find vote extrinsic at {}", vote.extrinsic_index)
-    };
     let verification_result = try_verify_glove_result(
         &network,
-        &extrinsic,
-        &service_info.proxy_account,
+        &subscan,
+        vote.extrinsic_index,
+        service_info.proxy_account,
         cmd.poll_index
     ).await;
     let verified_glove_proof = match verification_result {
