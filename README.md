@@ -241,6 +241,41 @@ If request body is invalid then a `422 Unprocessable Entity` is returned. If the
 request itself then a `400 Bad Request` is returned with a JSON object containing the error type (`error`) and 
 description (`description`). `429 Too Many Requests` can also be returned and the request should be retried later.
 
+## `GET /poll-info/{poll_index}`
+
+Get Glove-specific information about poll with index `poll_index`.
+
+### Request
+
+None
+
+### Response
+
+A JSON object with the following fields:
+
+#### `mixing_time`
+
+**Estimated** time the Glove service will mix vote requests and submit them on-chain. If the service hasn't received 
+requests for this poll then this is the time the service _would_ mix if it had. This field is only available for polls
+which have reached the decision phase. The mixing time isn't fixed and may change as the poll progresses. It is thus 
+recommended to occasionally poll this end-point.
+
+The time is given in terms of both block number and UNIX timestamp seconds; the value is an object with fields 
+`block_number` and `timestamp`. 
+
+If the poll is not active then `400 Bad Request` is returned.
+
+#### Example
+
+```json
+{
+  "mixing_time": {
+    "block_number": 22508946,
+    "timestamp": 1726170438
+  }
+}
+```
+
 # Client CLI
 
 There is a CLI client for interacting with the Glove service from the command line. It is built alongside the Glove

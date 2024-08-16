@@ -9,7 +9,7 @@ use aws_sdk_dynamodb::operation::delete_item::DeleteItemError;
 use aws_sdk_dynamodb::operation::put_item::PutItemError;
 use aws_sdk_dynamodb::operation::query::QueryError;
 use aws_sdk_dynamodb::operation::scan::ScanError;
-use axum::extract::{Json, State};
+use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Router;
@@ -32,21 +32,19 @@ use attestation::Error::InsecureMode;
 use client_interface::{CallableSubstrateNetwork, is_glove_member, ProxyError, ReferendumStatus, ServiceInfo, SignedRemoveVoteRequest, SubstrateNetwork};
 use client_interface::account_to_subxt_multi_address;
 use client_interface::BatchError;
-use client_interface::metadata::referenda::storage::types::referendum_info_for::ReferendumInfoFor;
 use client_interface::metadata::runtime_types::frame_system::pallet::Call as SystemCall;
 use client_interface::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
 use client_interface::metadata::runtime_types::pallet_conviction_voting::pallet::Error::InsufficientFunds;
 use client_interface::metadata::runtime_types::pallet_conviction_voting::pallet::Error::NotVoter;
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Call as ProxyCall;
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::NotProxy;
-use client_interface::metadata::runtime_types::pallet_referenda::types::DecidingStatus;
 use client_interface::metadata::runtime_types::polkadot_runtime::{RuntimeCall, RuntimeError};
 use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError::Proxy;
 use client_interface::subscan::Subscan;
 use common::{attestation, SignedGloveResult, SignedVoteRequest};
 use common::attestation::{AttestationBundle, AttestationBundleLocation, GloveProofLite};
 use RuntimeError::ConvictionVoting;
-use service::{GloveContext, GloveState, mixing, storage, to_proxied_vote_call};
+use service::{BLOCK_TIME_SECS, calculate_mixing_time, GloveContext, GloveState, mixing, MixingTime, storage, to_proxied_vote_call};
 use service::dynamodb::DynamodbGloveStorage;
 use service::enclave::EnclaveHandle;
 use service::storage::{GloveStorage, InMemoryGloveStorage};
@@ -140,13 +138,6 @@ enum EnclaveMode {
     Mock
 }
 
-// TODO Sign the enclave image
-// TODO Permantely ban accounts which vote directly
-// TODO Endpoint for poll end time and other info?
-
-/// The period near the end of decision or confirmation that Glove must mix and submit votes.
-const GLOVE_MIX_PERIOD: u32 = (15 * 60) / 6;
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let filter = EnvFilter::try_new(
@@ -221,6 +212,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/info", get(info))
         .route("/vote", post(vote))
         .route("/remove-vote", post(remove_vote))
+        .route("/poll-info/:poll_index", get(poll_info))
         .layer(TraceLayer::new_for_http())
         .with_state(glove_context);
     let listener = TcpListener::bind(args.address).await?;
@@ -324,10 +316,9 @@ async fn run_background_task(context: Arc<GloveContext>, subscan: Subscan) -> an
     let network = &context.network;
     let storage = &context.storage;
     let regular_mix_enabled = context.regular_mix_enabled;
-    let tracks = network.get_tracks()?;
 
     for poll_index in storage.get_poll_indices().await? {
-        let Some(ReferendumInfoFor::Ongoing(status)) = network.get_poll(poll_index).await? else {
+        let Some(status) = network.get_ongoing_poll(poll_index).await? else {
             info!("Removing poll {} as it is no longer active", poll_index);
             context.remove_poll(poll_index).await?;
             continue;
@@ -342,10 +333,7 @@ async fn run_background_task(context: Arc<GloveContext>, subscan: Subscan) -> an
                 violators, it will need to be re-mixed", poll_index);
             }
         } else if !mix_required {
-            let decision_period = tracks.get(&status.track)
-                .map(|track_info| track_info.decision_period)
-                .unwrap_or(0);
-            if is_poll_ready_for_final_mix(poll_index, status, decision_period, network).await? {
+            if is_poll_ready_for_final_mix(poll_index, status, network).await? {
                 mix_required = true;
             }
         }
@@ -384,21 +372,22 @@ async fn check_non_glove_voters(
 async fn is_poll_ready_for_final_mix(
     poll_index: u32,
     poll_status: ReferendumStatus,
-    decision_period: u32,
     network: &SubstrateNetwork
 ) -> Result<bool, SubxtError> {
-    if let Some(DecidingStatus { since: deciding_since, confirming }) = poll_status.deciding {
-        let now = network.current_block_number().await?;
-        if deciding_since + decision_period >= now - GLOVE_MIX_PERIOD {
-            info!("Poll {} is nearing the end of its decision period and will be mixed", poll_index);
+    let now = network.current_block_number().await?;
+    match calculate_mixing_time(poll_status, network).await? {
+        MixingTime::Deciding(block_number) if block_number >= now => {
+            info!("Poll {} is nearing the end of its decision period and will be mixed",
+                poll_index);
             return Ok(true);
         }
-        if confirming.is_some() && confirming.unwrap() >= now - GLOVE_MIX_PERIOD {
-            info!("Poll {} is nearing the end of its confirmation period and will be mixed", poll_index);
+        MixingTime::Confirming(block_number) if block_number >= now => {
+            info!("Poll {} is nearing the end of its confirmation period and will be mixed",
+                poll_index);
             return Ok(true);
         }
+        _ => Ok(false)
     }
-    Ok(false)
 }
 
 async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
@@ -490,6 +479,38 @@ async fn remove_vote(
     }
 
     Ok(())
+}
+
+async fn poll_info(
+    State(context): State<Arc<GloveContext>>,
+    Path(poll_index): Path<u32>
+) -> Result<Json<PollInfo>, PollInfoError> {
+    if context.regular_mix_enabled {
+        return Err(PollInfoError::RegularMixEnabled);
+    }
+    let Some(status) = context.network.get_ongoing_poll(poll_index).await? else {
+        return Err(PollInfoError::PollNotActive);
+    };
+    let current_block = context.network.current_block_number().await?;
+    let current_time = context.network.current_time().await? / 1000;
+    let mixing_time = calculate_mixing_time(status, &context.network).await?
+        .block_number()
+        .map(|block_number| MixingTimeJson {
+            block_number,
+            timestamp: current_time + ((block_number - current_block) * BLOCK_TIME_SECS) as u64
+        });
+    Ok(Json(PollInfo { mixing_time }))
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PollInfo {
+    mixing_time: Option<MixingTimeJson>
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MixingTimeJson {
+    block_number: u32,
+    timestamp: u64
 }
 
 async fn mix_votes(context: &GloveContext, poll_index: u32) {
@@ -643,7 +664,7 @@ enum InternalError {
     #[error("Proxy error: {0}")]
     Proxy(#[from] ProxyError),
     #[error("Storage error: {0}")]
-    Storage(#[from] storage::Error)
+    Storage(#[from] storage::Error),
 }
 
 impl InternalError {
@@ -824,5 +845,40 @@ impl From<ProxyError> for RemoveVoteError {
 impl From<storage::Error> for RemoveVoteError {
     fn from(error: storage::Error) -> Self {
         RemoveVoteError::Internal(error.into())
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+enum PollInfoError {
+    #[error("Regular mixing is enabled")]
+    RegularMixEnabled,
+    #[error("Poll is not active")]
+    PollNotActive,
+    #[error("Internal error: {0}")]
+    Internal(#[from] InternalError)
+}
+
+impl IntoResponse for PollInfoError {
+    fn into_response(self) -> Response {
+        match self {
+            PollInfoError::RegularMixEnabled =>
+                (StatusCode::NOT_FOUND, "Regular mixing is enabled".to_string()).into_response(),
+            PollInfoError::PollNotActive => {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(BadRequestResponse {
+                        error: "PollNotActive".into(),
+                        description: self.to_string()
+                    })
+                ).into_response()
+            }
+            PollInfoError::Internal(error) => error.into_response()
+        }
+    }
+}
+
+impl From<SubxtError> for PollInfoError {
+    fn from(error: SubxtError) -> Self {
+        PollInfoError::Internal(error.into())
     }
 }

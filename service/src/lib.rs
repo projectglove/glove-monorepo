@@ -9,7 +9,7 @@ use sp_runtime::AccountId32;
 use tokio::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tracing::warn;
 
-use client_interface::{account_to_subxt_multi_address, CallableSubstrateNetwork, subscan};
+use client_interface::{account_to_subxt_multi_address, CallableSubstrateNetwork, ReferendumStatus, subscan, SubstrateNetwork};
 use client_interface::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
 use client_interface::metadata::runtime_types::pallet_conviction_voting::vote::{AccountVote, Vote};
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Call as ProxyCall;
@@ -25,6 +25,46 @@ pub mod enclave;
 pub mod mixing;
 pub mod dynamodb;
 pub mod storage;
+
+pub const BLOCK_TIME_SECS: u32 = 6;
+/// The period near the end of decision or confirmation that Glove must mix and submit votes.
+const GLOVE_MIX_PERIOD: u32 = (15 * 60) / BLOCK_TIME_SECS;
+
+pub async fn calculate_mixing_time(
+    poll_status: ReferendumStatus,
+    network: &SubstrateNetwork
+) -> Result<MixingTime, subxt::Error> {
+    let Some(deciding_status) = poll_status.deciding else {
+        return Ok(MixingTime::NotDeciding);
+    };
+    let decision_period = network.get_tracks()?
+        .get(&poll_status.track)
+        .map(|track_info| track_info.decision_period)
+        .ok_or_else(|| subxt::Error::Other("Track not found".into()))?;
+    let decision_end = deciding_status.since + decision_period;
+    if let Some(confirming_end) = deciding_status.confirming {
+        if confirming_end < decision_end {
+            return Ok(MixingTime::Confirming(confirming_end - GLOVE_MIX_PERIOD));
+        }
+    }
+    Ok(MixingTime::Deciding(decision_end - GLOVE_MIX_PERIOD))
+}
+
+pub enum MixingTime {
+    Deciding(u32),
+    Confirming(u32),
+    NotDeciding
+}
+
+impl MixingTime {
+    pub fn block_number(&self) -> Option<u32> {
+        match self {
+            MixingTime::Deciding(block_number) => Some(*block_number),
+            MixingTime::Confirming(block_number) => Some(*block_number),
+            MixingTime::NotDeciding => None
+        }
+    }
+}
 
 /// Voter lookup for a poll.
 #[derive(Clone)]

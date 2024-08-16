@@ -197,6 +197,15 @@ impl SubstrateNetwork {
             .ok_or_else(|| SubxtError::Other("Current block number not available".into()))?;
         Ok(current_block_number)
     }
+
+    pub async fn current_time(&self) -> Result<u64, SubxtError> {
+        let current_time = self.api
+            .storage()
+            .at_latest().await?
+            .fetch(&storage().timestamp().now()).await?
+            .ok_or_else(|| SubxtError::Other("Current time not available".into()))?;
+        Ok(current_time)
+    }
 }
 
 impl Debug for SubstrateNetwork {
