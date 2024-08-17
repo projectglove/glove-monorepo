@@ -11,6 +11,7 @@ env:
 # To double check
 permissions:
   id-token: write # This is required for requesting the JWT
+  contents: write # This is required for creating a release
 
 jobs:
   build:
