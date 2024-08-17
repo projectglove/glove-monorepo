@@ -65,6 +65,10 @@ jobs:
           role-to-assume: arn:aws:iam::381491931967:role/GitHubAction-EC2-RO
           role-session-name: deploy-role-session
           aws-region: us-east-2
+          # To double check
+          id-token: write # This is required for requesting the JWT
+          contents: read  # This is required for actions/checkout
+
 
 
       - name: Run Ansible
