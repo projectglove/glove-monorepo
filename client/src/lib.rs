@@ -5,34 +5,33 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use bigdecimal::{BigDecimal, ToPrimitive};
 use clap::{Parser, Subcommand};
-use DispatchError::Module;
 use reqwest::{Client, StatusCode, Url};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
-use reqwest_retry::{Jitter, RetryTransientMiddleware};
 use reqwest_retry::policies::ExponentialBackoff;
+use reqwest_retry::{Jitter, RetryTransientMiddleware};
 use sp_core::bytes::from_hex;
 use sp_core::crypto::AccountId32;
-use sp_core::Encode;
+use sp_core::{Encode, H256};
 use sp_runtime::MultiSignature;
 use strum::Display;
 use subxt::error::DispatchError;
 use subxt::Error::Runtime;
 use subxt_core::utils::to_hex;
 use subxt_signer::sr25519::Keypair;
+use DispatchError::Module;
 
-use client_interface::{account_to_subxt_multi_address, CallableSubstrateNetwork, is_glove_member, SignedRemoveVoteRequest, SubstrateNetwork};
-use client_interface::metadata::referenda::storage::types::referendum_info_for::ReferendumInfoFor;
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::Duplicate;
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::NotFound;
 use client_interface::metadata::runtime_types::polkadot_runtime::{ProxyType, RuntimeError};
+use client_interface::subscan::{PollStatus, Subscan};
 use client_interface::RemoveVoteRequest;
 use client_interface::ServiceInfo;
-use client_interface::subscan::Subscan;
-use Command::{Info, JoinGlove, LeaveGlove, RemoveVote, VerifyVote, Vote};
-use common::{attestation, Conviction, SignedVoteRequest, VoteRequest};
+use client_interface::{account_to_subxt_multi_address, is_glove_member, CallableSubstrateNetwork, SignedRemoveVoteRequest};
 use common::attestation::{Attestation, EnclaveInfo};
-use RuntimeError::Proxy;
+use common::{attestation, Conviction, SignedVoteRequest, VoteRequest};
 use verify::try_verify_glove_result;
+use Command::{Info, JoinGlove, LeaveGlove, RemoveVote, VerifyVote, Vote};
+use RuntimeError::Proxy;
 
 pub mod verify;
 
@@ -61,7 +60,7 @@ where
     match args.command {
         JoinGlove(cmd) => join_glove(service_info, cmd).await,
         Vote(cmd) => vote(service_info, cmd, args.glove_url, http_client).await,
-        RemoveVote(cmd) => remove_vote(service_info, cmd, args.glove_url, http_client).await,
+        RemoveVote(cmd) => remove_vote(cmd, args.glove_url, http_client).await,
         VerifyVote(cmd) => verify_vote(service_info, cmd).await,
         LeaveGlove(cmd) => leave_glove(service_info, cmd).await,
         Info => info(service_info)
@@ -69,7 +68,7 @@ where
 }
 
 async fn join_glove(service_info: ServiceInfo, cmd: JoinCmd) -> Result<SuccessOutput> {
-    let network = cmd.secret_phrase_args.connect_to_network(&service_info).await?;
+    let network = connect_to_network(cmd.secret_phrase_args, cmd.node_endpoint_args).await?;
     if is_glove_member(&network, network.account(), service_info.proxy_account.clone()).await? {
         return Ok(SuccessOutput::AlreadyGloveMember);
     }
@@ -96,13 +95,15 @@ async fn vote(
     glove_url: Url,
     http_client: ClientWithMiddleware,
 ) -> Result<SuccessOutput> {
-    let network = cmd.secret_phrase_args.connect_to_network(&service_info).await?;
-    let balance = (&cmd.balance * 10u128.pow(network.token.decimals as u32))
+    let subscan = Subscan::new(service_info.network_name.clone(), cmd.subscan_api_key.clone());
+    let token = subscan.get_token().await?;
+    let keypair = cmd.secret_phrase_args.secret_phrase.clone();
+    let balance = (&cmd.balance * 10u128.pow(token.decimals as u32))
         .to_u128()
         .context("Vote balance is too big")?;
     let request = VoteRequest::new(
-        network.account(),
-        network.api.genesis_hash(),
+        keypair.public_key().0.into(),
+        genesis_hash(&subscan).await?,
         cmd.poll_index,
         cmd.aye,
         balance,
@@ -110,7 +111,7 @@ async fn vote(
     );
     let nonce = request.nonce;
 
-    let signature = MultiSignature::Sr25519(network.account_key.sign(&request.encode()).0.into());
+    let signature = MultiSignature::Sr25519(keypair.sign(&request.encode()).0.into());
     let signed_request = SignedVoteRequest { request, signature };
     if !signed_request.verify() {
         bail!("Something has gone wrong with the signature")
@@ -120,25 +121,23 @@ async fn vote(
         .json(&signed_request)
         .send().await
         .context("Unable to send vote request")?;
-
     if response.status() != StatusCode::OK {
         bail!(response.text().await?)
     }
-    return Ok(SuccessOutput::Voted { nonce });
+    Ok(SuccessOutput::Voted { nonce })
 }
 
 async fn remove_vote(
-    service_info: ServiceInfo,
     cmd: RemoveVoteCmd,
     glove_url: Url,
     http_client: ClientWithMiddleware,
 ) -> Result<SuccessOutput> {
-    let network = cmd.secret_phrase_args.connect_to_network(&service_info).await?;
+    let keypair = cmd.secret_phrase_args.secret_phrase;
     let request = RemoveVoteRequest {
-        account: network.account(),
+        account: keypair.public_key().0.into(),
         poll_index: cmd.poll_index
     };
-    let signature = MultiSignature::Sr25519(network.account_key.sign(&request.encode()).0.into());
+    let signature = MultiSignature::Sr25519(keypair.sign(&request.encode()).0.into());
     let signed_request = SignedRemoveVoteRequest { request, signature };
     if !signed_request.verify() {
         bail!("Something has gone wrong with the signature")
@@ -156,21 +155,17 @@ async fn remove_vote(
 }
 
 async fn verify_vote(service_info: ServiceInfo, cmd: VerifyVoteCmd) -> Result<SuccessOutput> {
-    let network = SubstrateNetwork::connect(node_endpoint(&service_info.network_name)).await?;
-    let Some(poll_info) = network.get_poll(cmd.poll_index).await? else {
-        bail!("Poll does not exist")
-    };
     let subscan = Subscan::new(service_info.network_name.clone(), cmd.subscan_api_key);
+    let active_polls = subscan.get_polls(PollStatus::Active).await?;
     let votes = subscan.get_votes(cmd.poll_index, Some(cmd.account.clone())).await?;
     let Some(vote) = votes.first() else {
-        if matches!(poll_info, ReferendumInfoFor::Ongoing(_)) {
-            bail!("Glove proxy has not voted yet")
+        if active_polls.iter().any(|poll| poll.referendum_index == cmd.poll_index) {
+            bail!("Glove proxy has not yet voted")
         } else {
             bail!("Poll is no longer active and Glove proxy did not vote")
         }
     };
     let verification_result = try_verify_glove_result(
-        &network,
         &subscan,
         vote.extrinsic_index,
         service_info.proxy_account,
@@ -199,6 +194,8 @@ async fn verify_vote(service_info: ServiceInfo, cmd: VerifyVoteCmd) -> Result<Su
         Glove proxy");
     }
 
+    let token = subscan.get_token().await?;
+
     if !cmd.enclave_measurement.is_empty() {
         let enclave_match = cmd.enclave_measurement
             .iter()
@@ -207,15 +204,14 @@ async fn verify_vote(service_info: ServiceInfo, cmd: VerifyVoteCmd) -> Result<Su
             bail!("Unknown enclave encountered in Glove proof ({})",
                 to_hex(&image_measurement))
         }
-        println!("Vote mixed by VERIFIED Glove enclave: {:?} with {} and conviction {:?}",
+        println!("Vote mixed by VERIFIED Glove enclave: {:?} using {} with conviction {:?}",
                  verified_glove_proof.result.direction,
-                 network.token.amount(assigned_balance.balance),
+                 token.display_amount(assigned_balance.balance),
                  assigned_balance.conviction);
     } else {
-        println!("Vote mixed by POSSIBLE Glove enclave ({}): {:?} with {} and conviction {:?}",
-                 to_hex(&image_measurement),
+        println!("Vote mixed by POSSIBLE Glove enclave: {:?} using {} with conviction {:?}",
                  verified_glove_proof.result.direction,
-                 network.token.amount(assigned_balance.balance),
+                 token.display_amount(assigned_balance.balance),
                  assigned_balance.conviction);
         println!();
         println!("To verify this is a Glove enclave, first audit the code:");
@@ -223,7 +219,7 @@ async fn verify_vote(service_info: ServiceInfo, cmd: VerifyVoteCmd) -> Result<Su
                  verified_glove_proof.attested_data.version,
                  env!("CARGO_PKG_REPOSITORY"));
         println!();
-        println!("And then verify 'PCR0' output is '{}':", to_hex(&image_measurement));
+        println!("And then check 'PCR0' output is '{}' by running:", to_hex(&image_measurement));
         println!("./build.sh");
     }
 
@@ -232,7 +228,7 @@ async fn verify_vote(service_info: ServiceInfo, cmd: VerifyVoteCmd) -> Result<Su
 
 // TODO Also remove any active votes, which requires a remove-all-votes request?
 async fn leave_glove(service_info: ServiceInfo, cmd: LeaveCmd) -> Result<SuccessOutput> {
-    let network = cmd.secret_phrase_args.connect_to_network(&service_info).await?;
+    let network = connect_to_network(cmd.secret_phrase_args, cmd.node_endpoint_args).await?;
     if !is_glove_member(&network, network.account(), service_info.proxy_account.clone()).await? {
         return Ok(SuccessOutput::NotGloveMember);
     }
@@ -280,9 +276,12 @@ pub fn url_with_path(url: &Url, path: &str) -> Url {
     with_path
 }
 
-// TODO This doesn't work for the Polkadot relay chain
-pub fn node_endpoint(network_name: &str) -> String {
-    format!("wss://{}-rpc.polkadot.io", network_name)
+pub async fn genesis_hash(subscan: &Subscan) -> Result<H256> {
+    let genesis_hash = subscan.get_block(0).await?.expect("Genesis block").hash;
+    if genesis_hash.len() != H256::len_bytes() {
+        bail!("Genesis hash is not 32 bytes")
+    }
+    Ok(H256::from_slice(&genesis_hash))
 }
 
 #[derive(Debug, Parser)]
@@ -307,16 +306,23 @@ struct SecretPhraseArgs {
     secret_phrase: Keypair
 }
 
-impl SecretPhraseArgs {
-    async fn connect_to_network(
-        &self,
-        service_info: &ServiceInfo
-    ) -> Result<CallableSubstrateNetwork> {
-        CallableSubstrateNetwork::connect(
-            node_endpoint(&service_info.network_name),
-            self.secret_phrase.clone()
-        ).await
-    }
+#[derive(Debug, Clone, clap::Args)]
+struct NodeEndpointArgs {
+    /// URL to a Substrate node endpoint for interacting with the network.
+    ///
+    /// See https://wiki.polkadot.network/docs/maintain-endpoints for more information.
+    #[arg(long, verbatim_doc_comment)]
+    node_endpoint: String
+}
+
+async fn connect_to_network(
+    secret_phrase_args: SecretPhraseArgs,
+    node_endpoint_args: NodeEndpointArgs
+) -> Result<CallableSubstrateNetwork> {
+    CallableSubstrateNetwork::connect(
+        node_endpoint_args.node_endpoint,
+        secret_phrase_args.secret_phrase
+    ).await
 }
 
 #[derive(Debug, Subcommand)]
@@ -345,7 +351,9 @@ enum Command {
 #[derive(Debug, Parser)]
 struct JoinCmd {
     #[command(flatten)]
-    secret_phrase_args: SecretPhraseArgs
+    secret_phrase_args: SecretPhraseArgs,
+    #[command(flatten)]
+    node_endpoint_args: NodeEndpointArgs
 }
 
 #[derive(Debug, Parser)]
@@ -362,7 +370,10 @@ struct VoteCmd {
     balance: BigDecimal,
     /// The vote conviction multiplier
     #[arg(long, short, verbatim_doc_comment, default_value_t = 0)]
-    conviction: u8
+    conviction: u8,
+    /// Optional, API key to use with Subscan
+    #[arg(long, short, verbatim_doc_comment)]
+    subscan_api_key: Option<String>
 }
 
 impl VoteCmd {
@@ -416,7 +427,9 @@ struct VerifyVoteCmd {
 #[derive(Debug, Parser)]
 struct LeaveCmd {
     #[command(flatten)]
-    secret_phrase_args: SecretPhraseArgs
+    secret_phrase_args: SecretPhraseArgs,
+    #[command(flatten)]
+    node_endpoint_args: NodeEndpointArgs
 }
 
 #[derive(Display, Debug, PartialEq)]

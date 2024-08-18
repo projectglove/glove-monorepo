@@ -12,7 +12,7 @@ anyhow.workspace = true
 sp-core.workspace = true
 sp-runtime.workspace = true
 ss58-registry.workspace = true
-subxt.workspace = true
+subxt = { workspace = true, features = ["unstable-reconnecting-rpc-client"] }
 subxt-core.workspace = true
 subxt-signer.workspace = true
 thiserror.workspace = true

@@ -1,3 +1,9 @@
+use anyhow::{Context, Result};
+use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
+use serde::{Deserialize, Serialize};
+use sp_core::crypto::AccountId32;
+use sp_runtime::MultiSignature;
+use ss58_registry::{Ss58AddressFormat, Ss58AddressFormatRegistry, Token};
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
@@ -5,24 +11,19 @@ use std::future::Future;
 use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
-
-use anyhow::{Context, Result};
-use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
-use serde::{Deserialize, Serialize};
-use sp_core::crypto::AccountId32;
-use sp_runtime::MultiSignature;
-use ss58_registry::{Ss58AddressFormat, Ss58AddressFormatRegistry, Token};
-use subxt::Error as SubxtError;
+use std::time::Duration;
+use subxt::backend::rpc::reconnecting_rpc_client::{Client, ExponentialBackoff};
 use subxt::ext::scale_decode::DecodeAsType;
 use subxt::utils::AccountId32 as SubxtAccountId32;
+use subxt::Error as SubxtError;
 use subxt_core::config::PolkadotConfig;
 use subxt_core::tx::payload::Payload;
-use subxt_signer::SecretUri;
 use subxt_signer::sr25519;
+use subxt_signer::SecretUri;
 use tokio::sync::Mutex;
 
-use common::{ExtrinsicLocation, verify_js_payload};
 use common::attestation::AttestationBundle;
+use common::{verify_js_payload, ExtrinsicLocation};
 use metadata::proxy::events::ProxyExecuted;
 use metadata::referenda::storage::types::referendum_info_for::ReferendumInfoFor;
 use metadata::runtime_types::frame_support::traits::preimages::Bounded;
@@ -31,8 +32,8 @@ use metadata::runtime_types::polkadot_runtime::OriginCaller;
 use metadata::runtime_types::polkadot_runtime::ProxyType;
 use metadata::runtime_types::polkadot_runtime::RuntimeCall;
 use metadata::runtime_types::polkadot_runtime::RuntimeError;
-use metadata::runtime_types::sp_runtime::DispatchError;
 use metadata::runtime_types::sp_runtime::traits::BlakeTwo256;
+use metadata::runtime_types::sp_runtime::DispatchError;
 use metadata::storage;
 use metadata::utility::events::BatchInterrupted;
 
@@ -65,8 +66,15 @@ pub struct SubstrateNetwork {
 
 impl SubstrateNetwork {
     pub async fn connect(url: String) -> Result<Self> {
-        let api = OnlineClient::from_url(url).await
-            .context("Unable to connect to network endpoint:")?;
+        let rpc_client = Client::builder()
+            .retry_policy(
+                ExponentialBackoff::from_millis(100)
+                    .max_delay(Duration::from_secs(10))
+                    .take(5),
+            )
+            .build(url).await?;
+        let api = OnlineClient::from_rpc_client(rpc_client).await
+            .context("Unable to connect to network endpoint")?;
         let ss58_address_format = api.constants()
             .at(&metadata::constants().system().ss58_prefix())
             .map(Ss58AddressFormat::custom)?;

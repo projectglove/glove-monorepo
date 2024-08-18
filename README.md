@@ -5,12 +5,11 @@
 - [Glove mixing](#glove-mixing)
 - [Running the Glove service](#running-the-glove-service)
 - [REST API](#rest-api)
-- [Client CLI](#client-cli)
 - [Deployment](#deployment)
 
 # Building Glove
 
-You will need an x86-64 machine with docker installed to build Glove:
+You will need an x86-64 machine with docker installed to fully build Glove:
 
 ```shell
 ./build.sh
@@ -24,7 +23,7 @@ Enclave Image successfully created.
 {
   "Measurements": {
     "HashAlgorithm": "Sha384 { ... }",
-    "PCR0": "4d132e40ed8d6db60d01d0116c34a4a92914de73d668821b6e019b72ae152b1180ef7c8a378e6c1925fe2bcb31c0ec80",
+    "PCR0": "609e2ce86435160b1aba2f1995bdab26c8ce0f3db0d81fb435166e22b6d95261cbee8ed046469b009d1048e614227cde",
 ...
   }
 }
@@ -39,13 +38,47 @@ following command:
 target/release/client --glove-url=<GLOVE SERVICE URL> verify-vote --account=<GLOVE CLIENT ACCOUNT> --poll-index=<POLL INDEX> --enclave-measurement=<EXPECTED ENCLAVE MEASUREMENT>
 ```
 
-`enclave-measurement` is the expected _audited_ Glove enclave identity. If this is not known then run the command
-without it, and if the client determines the vote was mixed by a _potential_ Glove enclave it will print out
-instructions on how to audit and verify the enclave code.
+> [!NOTE]
+> You can build just the client with `./build.sh client`.
+
+This will perform the following checks:
+
+* The Glove proxy account has voted on the given poll
+* The on-chain vote comes accompanied with a valid signed Glove proof
+* The Glove proof was produced by a genuine AWS Nitro enclave
+* The proof mirrors the on-chain vote for the account
+
+This is an example output of a successful verification:
+
+```
+Nonce was not provided so cannot check if most recent vote request was used by Glove proxy
+Vote mixed by VERIFIED Glove enclave: Nay using 0.979 ROC with conviction None
+```
 
 > [!NOTE]
-> The enclave measurement for the latest build is
-> `4d132e40ed8d6db60d01d0116c34a4a92914de73d668821b6e019b72ae152b1180ef7c8a378e6c1925fe2bcb31c0ec80`.
+> The warning about the nonce can be resolved by providing the nonce of the vote request with the `--nonce` flag.
+
+`--enclave-measurement` is the expected _audited_ Glove enclave identity. If this is not known then run the command
+without it, and if the client determines the vote was mixed by a _potential_ Glove enclave it will print out
+instructions on how to audit and verify the enclave code:
+
+```
+Nonce was not provided so cannot check if most recent vote request was used by Glove proxy
+Vote mixed by POSSIBLE Glove enclave: Nay using 0.979 ROC with conviction None
+
+To verify this is a Glove enclave, first audit the code:
+git clone --depth 1 --branch v0.0.12 https://github.com/projectglove/glove-monorepo/
+
+And then check 'PCR0' output is '0x609e2ce86435160b1aba2f1995bdab26c8ce0f3db0d81fb435166e22b6d95261cbee8ed046469b009d1048e614227cde' by running:
+./build.sh
+```
+
+The `--branch` version that's printed is specific to the Glove proof for that vote (and not necessarily the 
+current version of the Glove client or service), and building the enclave for that version should produce the 
+expected `PCR0` measurement.
+
+> [!NOTE]
+> The client can also be used to submit vote requests. Run with `--help` to see full options.
 
 # Glove mixing
 
@@ -276,21 +309,6 @@ If the poll is not active then `400 Bad Request` is returned.
 }
 ```
 
-# Client CLI
-
-There is a CLI client for interacting with the Glove service from the command line. It is built alongside the Glove
-service and enclave with the `./build.sh` command (described above). To build it on a local machine:
-
-```shell
-cargo build --release --bin client
-```
-
-```shell
-target/release/client --help
-```
-
-First join Glove with the `join-glove` command and then vote with `vote`.
-
 # Development
 
 ## MacOS
@@ -313,9 +331,8 @@ subxt metadata --url="wss://rpc.polkadot.io:443" -f bytes > assets/polkadot-meta
 
 # Deployment
 
-Additionally, to the Enclave source code the repo contain examples of the Configuration as Code scripts.
-The are located in the [devops](devops) folder.
-Cloud infrastructure is handled by Terraform/OpenTofu and VM configuration by Ansible.
+This repo also has example configuration as code scripts for deployment of the Glove service, located in the
+[devops](devops) directory. Cloud infrastructure is handled by Terraform/OpenTofu and VM configuration by Ansible.
 
 ## Terraform/OpenTofu
 The scripts in the [terraform](devops/terraform) subfolder are responsible for deployment of:
@@ -334,25 +351,34 @@ The role gets the latest binaries from the github, release page, sets systemd se
 
 ## GitHub Actions
 
-The ansible playbook and the role are used in the release GHA.
-Every time a new tag is set, the action builds binaries, and then uses Ansible to update the test deployment.
+The Ansible playbook and the role are used in the release GHA. Whenever a new git tag is pushed, the action builds the
+binaries, and then uses Ansible to update the test deployment.
 
-## Debbuging
+> [!IMPORTANT]  
+> The git tag **must** begin with `v` and match the project version in [Cargo.toml](Cargo.toml). This is important to 
+> ensure users download the correct version of the enclave code when verifying Glove proofs.
+
+## Debugging
 
 To check the status of the service run:
 ```
 systemctl status glove
 ```
 
-Glove logs are picked up by SystemD and can be access with the usually methods. E.g.:
+Glove service logs are picked up by SystemD and can be accessed with:
+
 ```
 journalctl -u glove
 ```
+
 or to follow the flow of logs:
+
 ```
 journalctl -fu glove
 ```
+
 or to get extra information on latest logs:
+
 ```
 journalctl -xeu glove
 ```

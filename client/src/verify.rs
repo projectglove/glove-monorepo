@@ -2,13 +2,14 @@ use std::collections::HashMap;
 
 use sp_core::crypto::AccountId32;
 
+use crate::genesis_hash;
 use attestation::EnclaveInfo;
-use AttestationBundleLocation::SubstrateRemark;
-use client_interface::{subscan, SubstrateNetwork};
+use client_interface::subscan;
 use client_interface::subscan::{ExtrinsicDetail, HexString, MultiAddress, RuntimeCall, SplitAbstainAccountVote, Subscan};
-use common::{AssignedBalance, attestation, BASE_AYE, Conviction, ExtrinsicLocation, GloveResult, VoteDirection};
 use common::attestation::{AttestationBundle, AttestationBundleLocation, AttestedData, GloveProof, GloveProofLite};
+use common::{attestation, AssignedBalance, Conviction, ExtrinsicLocation, GloveResult, VoteDirection, BASE_AYE};
 use subscan::AccountVote;
+use AttestationBundleLocation::SubstrateRemark;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct VerifiedGloveProof {
@@ -37,7 +38,6 @@ impl VerifiedGloveProof {
 
 /// A result of `Ok(None)` means the extrinsic was not a Glove result.
 pub async fn try_verify_glove_result(
-    network: &SubstrateNetwork,
     subscan: &Subscan,
     vote_extrinsic_location: ExtrinsicLocation,
     proxy_account: AccountId32,
@@ -82,7 +82,7 @@ pub async fn try_verify_glove_result(
             get_attestation_bundle_from_remark(subscan, remark_location).await?
     };
 
-    if attestation_bundle.attested_data.genesis_hash != network.api.genesis_hash() {
+    if Some(attestation_bundle.attested_data.genesis_hash) != genesis_hash(&subscan).await.ok() {
         return Err(Error::ChainMismatch);
     }
 
@@ -254,10 +254,8 @@ mod tests {
 
     #[tokio::test]
     async fn verification_of_sample_glove_result() {
-        let network = SubstrateNetwork::connect("wss://rococo-rpc.polkadot.io".into()).await.unwrap();
         let subscan = Subscan::new("rococo".into(), None);
         let verification_result = try_verify_glove_result(
-            &network,
             &subscan,
             ExtrinsicLocation { block_number: 11729890, extrinsic_index: 2 },
             AccountId32::from_str("5E79AhCNFdcJJ1nWXepeib7BWRbacVbpKvRhcoyv8dRwrmQ3").unwrap(),

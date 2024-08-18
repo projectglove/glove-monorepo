@@ -1,19 +1,18 @@
 use std::io;
 use std::io::Write;
-use std::sync::{Arc, mpsc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread::available_parallelism;
 
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
-use rand::{Rng, thread_rng};
+use rand::{thread_rng, Rng};
 use reqwest::{Client, Url};
 use sp_runtime::AccountId32;
 use tokio::spawn;
 
-use client::{node_endpoint, url_with_path};
-use client_interface::{parse_secret_phrase, ServiceInfo, SubstrateNetwork};
-use client_interface::metadata::referenda::storage::types::referendum_info_for::ReferendumInfoFor;
-use client_interface::subscan::Subscan;
+use client::url_with_path;
+use client_interface::subscan::{PollStatus, Subscan};
+use client_interface::{parse_secret_phrase, ServiceInfo};
 use common::ExtrinsicLocation;
 
 #[tokio::main]
@@ -68,16 +67,13 @@ async fn join_glove(glove_url: Url, cmd: JoinGloveCmd) -> Result<()> {
 }
 
 async fn vote(glove_url: Url, cmd: VoteCmd) -> Result<()>{
+    let parallelism = cmd.accounts_args.parallelism()?;
+
     let poll_indices = if cmd.poll_index.is_empty() {
-        let service_info = Client::new()
-            .get(url_with_path(&glove_url, "info"))
-            .send().await?
-            .error_for_status()?
-            .json::<ServiceInfo>().await?;
-        let network = SubstrateNetwork::connect(node_endpoint(&service_info.network_name)).await?;
         print!("Fetching active polls... ");
         io::stdout().flush()?;
-        let ongoing_poll_indices = get_ongoing_poll_indices(&network).await?;
+        let service_info = service_info(&glove_url).await?;
+        let ongoing_poll_indices = get_ongoing_poll_indices(&service_info).await?;
         println!("{:?}", ongoing_poll_indices);
         ongoing_poll_indices
     } else {
@@ -112,8 +108,6 @@ async fn vote(glove_url: Url, cmd: VoteCmd) -> Result<()>{
     let shared_vote_args = Arc::new(Mutex::new(vote_args));
 
     let (sender, receiver) = mpsc::channel();
-
-    let parallelism = cmd.accounts_args.parallelism()?;
 
     for _ in 0..parallelism {
         let shared_vote_args = shared_vote_args.clone();
@@ -162,11 +156,7 @@ async fn vote(glove_url: Url, cmd: VoteCmd) -> Result<()>{
 }
 
 async fn extrinsic(extrinsic_location: ExtrinsicLocation, args: Args) -> Result<()> {
-    let service_info = Client::new()
-        .get(url_with_path(&args.glove_url, "info"))
-        .send().await?
-        .error_for_status()?
-        .json::<ServiceInfo>().await?;
+    let service_info = service_info(&args.glove_url).await?;
     let subscan = Subscan::new(service_info.network_name, None);
     match subscan.get_extrinsic(extrinsic_location).await? {
         Some(extrinsic) => println!("{:#?}", extrinsic),
@@ -175,19 +165,22 @@ async fn extrinsic(extrinsic_location: ExtrinsicLocation, args: Args) -> Result<
     Ok(())
 }
 
-async fn get_ongoing_poll_indices(network: &SubstrateNetwork) -> Result<Vec<u32>> {
-    // TODO Use Subscan
-    let mut poll_indices = Vec::new();
-    let mut poll_index = 0;
-    loop {
-        match network.get_poll(poll_index).await? {
-            Some(ReferendumInfoFor::Ongoing(_)) => poll_indices.push(poll_index),
-            Some(_) => {},
-            None => break,
-        }
-        poll_index += 1;
-    }
+async fn get_ongoing_poll_indices(service_info: &ServiceInfo) -> Result<Vec<u32>> {
+    let subscan = Subscan::new(service_info.network_name.clone(), None);
+    let poll_indices = subscan.get_polls(PollStatus::Active).await?
+        .iter()
+        .map(|poll| poll.referendum_index)
+        .collect::<Vec<_>>();
     Ok(poll_indices)
+}
+
+async fn service_info(glove_url: &Url) -> Result<ServiceInfo, reqwest::Error> {
+    let service_info = Client::new()
+        .get(url_with_path(&glove_url, "info"))
+        .send().await?
+        .error_for_status()?
+        .json::<ServiceInfo>().await?;
+    Ok(service_info)
 }
 
 #[derive(Debug, Parser)]
@@ -238,7 +231,7 @@ struct AccountsArgs {
     #[arg(long, short, verbatim_doc_comment)]
     end_derivation: u8,
 
-    #[arg(long, short, verbatim_doc_comment, default_value_t = 0)]
+    #[arg(long, verbatim_doc_comment, default_value_t = 0)]
     parallelism: u8
 }
 
