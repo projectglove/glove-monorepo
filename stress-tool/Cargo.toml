@@ -16,3 +16,4 @@ reqwest.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 subxt-signer.workspace = true
+serde.workspace = true

@@ -12,13 +12,18 @@ docker create --name glove-build-env -v /var/run/docker.sock:/var/run/docker.soc
 docker cp . glove-build-env:/glove
 docker start glove-build-env > /dev/null
 glove_build_env git config --global --add safe.directory /glove
-glove_build_env cargo test
-glove_build_env cargo build --bins -p enclave --target x86_64-unknown-linux-musl -r
-glove_build_env cargo build --bins --workspace --exclude enclave -r
-glove_build_env touch --date='@0' target/x86_64-unknown-linux-musl/release/enclave
-glove_build_env docker build --no-cache -t glove-enclave -f enclave/Dockerfile .
-glove_build_env nitro-cli build-enclave --docker-uri glove-enclave --output-file target/release/glove.eif
-glove_build_env nitro-cli describe-eif --eif-path target/release/glove.eif | jq -r '.Measurements.PCR0' > target/release/enclave_measurement.txt
+if [[ $* == client ]]
+then
+  glove_build_env cargo build --bins -p client -r
+else
+  glove_build_env cargo test
+  glove_build_env cargo build --bins -p enclave --target x86_64-unknown-linux-musl -r
+  glove_build_env cargo build --bins --workspace --exclude enclave -r
+  glove_build_env touch --date='@0' target/x86_64-unknown-linux-musl/release/enclave
+  glove_build_env docker build --no-cache -t glove-enclave -f enclave/Dockerfile .
+  glove_build_env nitro-cli build-enclave --docker-uri glove-enclave --output-file target/release/glove.eif
+  glove_build_env nitro-cli describe-eif --eif-path target/release/glove.eif | jq -r '.Measurements.PCR0' > target/release/enclave_measurement.txt
+  docker image rm glove-enclave > /dev/null
+fi
 docker cp glove-build-env:/glove/target .
-docker image rm glove-enclave > /dev/null
 docker rm -f glove-build-env > /dev/null

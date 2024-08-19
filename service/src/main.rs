@@ -12,8 +12,8 @@ use aws_sdk_dynamodb::operation::scan::ScanError;
 use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Router;
 use axum::routing::{get, post};
+use axum::Router;
 use cfg_if::cfg_if;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
@@ -24,31 +24,31 @@ use tokio::net::TcpListener;
 use tokio::spawn;
 use tokio::time::sleep;
 use tower_http::trace::TraceLayer;
-use tracing::{debug, error, info};
 use tracing::warn;
+use tracing::{debug, error, info};
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
 use attestation::Error::InsecureMode;
-use client_interface::{CallableSubstrateNetwork, is_glove_member, ProxyError, ReferendumStatus, ServiceInfo, SignedRemoveVoteRequest, SubstrateNetwork};
-use client_interface::account_to_subxt_multi_address;
-use client_interface::BatchError;
 use client_interface::metadata::runtime_types::frame_system::pallet::Call as SystemCall;
 use client_interface::metadata::runtime_types::pallet_conviction_voting::pallet::Call as ConvictionVotingCall;
 use client_interface::metadata::runtime_types::pallet_conviction_voting::pallet::Error::InsufficientFunds;
 use client_interface::metadata::runtime_types::pallet_conviction_voting::pallet::Error::NotVoter;
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Call as ProxyCall;
 use client_interface::metadata::runtime_types::pallet_proxy::pallet::Error::NotProxy;
-use client_interface::metadata::runtime_types::polkadot_runtime::{RuntimeCall, RuntimeError};
 use client_interface::metadata::runtime_types::polkadot_runtime::RuntimeError::Proxy;
+use client_interface::metadata::runtime_types::polkadot_runtime::{RuntimeCall, RuntimeError};
 use client_interface::subscan::Subscan;
-use common::{attestation, SignedGloveResult, SignedVoteRequest};
+use client_interface::BatchError;
+use client_interface::account_to_subxt_multi_address;
+use client_interface::{is_glove_member, CallableSubstrateNetwork, ProxyError, ReferendumStatus, ServiceInfo, SignedRemoveVoteRequest, SubstrateNetwork};
 use common::attestation::{AttestationBundle, AttestationBundleLocation, GloveProofLite};
-use RuntimeError::ConvictionVoting;
-use service::{BLOCK_TIME_SECS, calculate_mixing_time, GloveContext, GloveState, mixing, MixingTime, storage, to_proxied_vote_call};
+use common::{attestation, SignedGloveResult, SignedVoteRequest};
 use service::dynamodb::DynamodbGloveStorage;
 use service::enclave::EnclaveHandle;
 use service::storage::{GloveStorage, InMemoryGloveStorage};
+use service::{calculate_mixing_time, mixing, storage, to_proxied_vote_call, GloveContext, GloveState, MixingTime, BLOCK_TIME_SECS};
 use storage::Error as StorageError;
+use RuntimeError::ConvictionVoting;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Glove proxy service")]
@@ -65,7 +65,7 @@ struct Args {
     #[arg(long, verbatim_doc_comment)]
     address: String,
 
-    /// URL to a substrate node endpoint. The Glove service will use the API exposed by this to
+    /// URL to a Substrate node endpoint. The Glove service will use the API exposed by this to
     /// interact with the network.
     ///
     /// See https://wiki.polkadot.network/docs/maintain-endpoints for more information.
@@ -140,6 +140,9 @@ enum EnclaveMode {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let version = env!("CARGO_PKG_VERSION");
+    info!("Starting Glove service v{}", version);
+
     let filter = EnvFilter::try_new(
         "subxt_core::events=info,hyper_util=info,reqwest::connect=info,aws=info,hyper::proto::h1=info")?
         // Set the base level to debug
@@ -176,9 +179,8 @@ async fn main() -> anyhow::Result<()> {
         &network.api.genesis_hash()
     ).await?;
 
-    if attestation_bundle.attested_data.version != env!("CARGO_PKG_VERSION") {
-        bail!("Version mismatch with enclave. Expected {:?}, got {:?}",
-            env!("CARGO_PKG_VERSION"), attestation_bundle.attested_data.version);
+    if attestation_bundle.attested_data.version != version {
+        bail!("Version mismatch with enclave: {}", attestation_bundle.attested_data.version);
     }
 
     // Just double-check everything is OK. A failure here prevents invalid Glove proofs from being
@@ -286,7 +288,7 @@ async fn mark_voted_polls_as_final(
 ) -> anyhow::Result<()> {
     let glove_proxy = Some(context.network.account());
     let poll_indices = context.storage.get_poll_indices().await?;
-    debug!("Polls: {:?}", poll_indices);
+    debug!("Polls with requests: {:?}", poll_indices);
     for poll_index in poll_indices {
         let voter_lookup = context.state.get_poll_state_ref(poll_index).await.voter_lookup;
         let proxy_has_voted = voter_lookup.get_voters(&subscan).await?
@@ -379,12 +381,12 @@ async fn is_poll_ready_for_final_mix(
         MixingTime::Deciding(block_number) if block_number >= now => {
             info!("Poll {} is nearing the end of its decision period and will be mixed",
                 poll_index);
-            return Ok(true);
+            Ok(true)
         }
         MixingTime::Confirming(block_number) if block_number >= now => {
             info!("Poll {} is nearing the end of its confirmation period and will be mixed",
                 poll_index);
-            return Ok(true);
+            Ok(true)
         }
         _ => Ok(false)
     }
@@ -692,6 +694,13 @@ impl InternalError {
             _ => false
         }
     }
+
+    fn is_service_unavailable(&self) -> bool {
+        match self {
+            InternalError::Subxt(error) => error.is_disconnected_will_reconnect(),
+            _ => false
+        }
+    }
 }
 
 impl IntoResponse for InternalError {
@@ -701,6 +710,12 @@ impl IntoResponse for InternalError {
             (
                 StatusCode::TOO_MANY_REQUESTS,
                 "Too many requests, please try again later".to_string()
+            ).into_response()
+        } else if self.is_service_unavailable() {
+            warn!("Service unavailable: {:?}", self);
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Unable to service request, please try again later".to_string()
             ).into_response()
         } else {
             warn!("Unable to service request: {:?}", self);

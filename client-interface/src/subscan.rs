@@ -3,10 +3,10 @@ use std::ops::Deref;
 use std::time::Duration;
 
 use reqwest::header::{HeaderMap, RETRY_AFTER};
-use serde::{de, Deserialize, Deserializer, Serialize};
 use serde::de::DeserializeOwned;
-use serde_with::DisplayFromStr;
+use serde::{de, Deserialize, Deserializer, Serialize};
 use serde_with::serde_as;
+use serde_with::DisplayFromStr;
 use sp_core::bytes::from_hex;
 use sp_runtime::AccountId32;
 use tokio::time::sleep;
@@ -30,6 +30,30 @@ impl Subscan {
         }
     }
 
+    pub async fn get_polls(&self, status: PollStatus) -> Result<Vec<Poll>, Error> {
+        let mut all_polls = Vec::new();
+
+        let mut request = PollsRequest { status, page: 0, row: 100 };
+
+        loop {
+            let (headers, polls_response) = self.api_call_for::<PollsResponse>(
+                "scan/referenda/referendums",
+                &request
+            ).await?;
+            let Some(data) = polls_response.data else {
+                handle_error(headers, &polls_response.api_response, &request).await?;
+                continue;
+            };
+            let Some(mut polls) = data.list else {
+                break;
+            };
+            all_polls.append(&mut polls);
+            request.page += 1;
+        }
+
+        Ok(all_polls)
+    }
+
     pub async fn get_votes(
         &self,
         poll_index: u32,
@@ -47,7 +71,7 @@ impl Subscan {
 
         loop {
             let (headers, votes_response) = self.api_call_for::<VotesResponse>(
-                "referenda/votes",
+                "scan/referenda/votes",
                 &request
             ).await?;
             let Some(data) = votes_response.data else {
@@ -64,6 +88,23 @@ impl Subscan {
         Ok(all_votes)
     }
 
+    pub async fn get_block(&self, block_number: u32) -> Result<Option<Block>, Error> {
+        let request = BlockRequest { block_num: block_number, only_head: true };
+        loop {
+            let (headers, block_response) = self.api_call_for::<BlockResponse>(
+                "scan/block",
+                &request
+            ).await?;
+            if let Some(block) = block_response.data {
+                return Ok(Some(block));
+            };
+            if block_response.api_response.code == 10009 {
+                return Ok(None);
+            }
+            handle_error(headers, &block_response.api_response, &request).await?;
+        }
+    }
+
     pub async fn get_extrinsic(
         &self,
         extrinsic_location: ExtrinsicLocation
@@ -75,7 +116,7 @@ impl Subscan {
         };
         loop {
             let (headers, extrinsic_response) = self.api_call_for::<ExtrinsicResponse>(
-                "extrinsic",
+                "scan/extrinsic",
                 &request
             ).await?;
             if extrinsic_response.api_response.code != 0 {
@@ -86,13 +127,28 @@ impl Subscan {
         }
     }
 
+    pub async fn get_token(&self) -> Result<Token, Error> {
+        let request = TokenRequest { include_extends: false };
+        loop {
+            let (headers, token_response) = self.api_call_for::<TokenResponse>(
+                "v2/scan/token/native",
+                &request
+            ).await?;
+            let Some(token) = token_response.data.and_then(|data| data.token) else {
+                handle_error(headers, &token_response.api_response, &request).await?;
+                continue;
+            };
+            return Ok(token);
+        }
+    }
+
     async fn api_call_for<Resp: DeserializeOwned>(
         &self,
-        end_point: &str,
+        path: &str,
         request: &(impl Serialize + ?Sized)
     ) -> Result<(HeaderMap, Resp), Error> {
         let request_builder = self.http_client
-            .post(format!("https://{}.api.subscan.io/api/scan/{}", self.network, end_point));
+            .post(format!("https://{}.api.subscan.io/api/{}", self.network, path));
         let request_builder = match &self.api_key {
             Some(api_key) => request_builder.header("X-API-Key", api_key),
             None => request_builder
@@ -124,6 +180,43 @@ async fn handle_error(
     Ok(())
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct ApiResponse {
+    code: i64,
+    message: String
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PollsRequest {
+    status: PollStatus,
+    page: u32,
+    row: u8,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PollStatus {
+    Active,
+    Completed,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PollsResponse {
+    #[serde(flatten)]
+    api_response: ApiResponse,
+    data: Option<PollsData>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PollsData {
+    list: Option<Vec<Poll>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Poll {
+    pub referendum_index: u32
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct VotesRequest {
     referendum_index: u32,
@@ -133,25 +226,10 @@ struct VotesRequest {
     row: u8,
 }
 
-#[serde_as]
-#[derive(Debug, Clone, Serialize)]
-struct ExtrinsicRequest {
-    events_limit: u32,
-    #[serde_as(as = "DisplayFromStr")]
-    extrinsic_index: ExtrinsicLocation,
-    only_extrinsic_event: bool
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Valid {
     Valid,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct ApiResponse {
-    code: i64,
-    message: String
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -172,6 +250,36 @@ pub struct ConvictionVote {
     pub account: Account,
     #[serde_as(as = "DisplayFromStr")]
     pub extrinsic_index: ExtrinsicLocation,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BlockRequest {
+    block_num: u32,
+    only_head: bool
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct BlockResponse {
+    #[serde(flatten)]
+    api_response: ApiResponse,
+    data: Option<Block>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Block {
+    pub block_num: u32,
+    pub block_timestamp: u64,
+    pub finalized: bool,
+    pub hash: HexString
+}
+
+#[serde_as]
+#[derive(Debug, Clone, Serialize)]
+struct ExtrinsicRequest {
+    events_limit: u32,
+    #[serde_as(as = "DisplayFromStr")]
+    extrinsic_index: ExtrinsicLocation,
+    only_extrinsic_event: bool
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -225,7 +333,42 @@ impl ExtrinsicParam {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Serialize)]
+struct TokenRequest {
+    include_extends: bool
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TokenResponse {
+    #[serde(flatten)]
+    api_response: ApiResponse,
+    data: Option<TokenData>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TokenData {
+    token: Option<Token>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Token {
+    pub name: String,
+    pub decimals: u8,
+}
+
+impl Token {
+    pub fn display_amount(&self, amount: u128) -> String {
+        let multiplier = u128::pow(10, self.decimals as u32);
+        format!(
+            "{}.{:0>3} {}",
+            amount / multiplier,
+            amount % multiplier / (multiplier / 1000),
+            self.name
+        )
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(transparent)]
 pub struct HexString {
     #[serde(deserialize_with = "hex_deserialize")]
