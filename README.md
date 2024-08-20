@@ -1,3 +1,12 @@
+# Glove
+
+Glove is a pseudo-anonymous service for [Polkadot OpenGov](https://wiki.polkadot.network/docs/learn-polkadot-opengov)
+enabling voters to partake in referenda without revealing their voting preferences. The Glove service leverages the 
+confidentiality of secure enclaves to mix votes in a secure and verifiable manner. This reference implementation 
+uses [AWS Nitro Enclaves](https://aws.amazon.com/ec2/nitro/nitro-enclaves).
+
+You can read more about Glove and how it achieves these goals in the [technical design](docs/technical-design.md).
+
 **Table of Contents**
 
 - [Building Glove](#building-glove)
@@ -7,7 +16,7 @@
 - [REST API](#rest-api)
 - [Deployment](#deployment)
 
-# Building Glove
+## Building Glove
 
 You will need an x86-64 machine with docker installed to fully build Glove:
 
@@ -29,7 +38,7 @@ Enclave Image successfully created.
 }
 ```
 
-# Verifying Glove votes
+## Verifying Glove votes
 
 If you're using a Glove service and want to confirm the on-chain vote was mixed from a genuine Glove enclave, run the
 following command:
@@ -80,7 +89,7 @@ expected `PCR0` measurement.
 > [!NOTE]
 > The client can also be used to submit vote requests. Run with `--help` to see full options.
 
-# Glove mixing
+## Glove mixing
 
 These are the rules when comes to vote requests and mixing:
 
@@ -119,7 +128,7 @@ The Glove service will initiate a mxing of the vote requests for a poll when one
 > the `--regular-mix` flag can turn this off and mix votes on a regular basis. However, this MUST NOT be enabled in 
 > production as it will leak private information of the vote requests.
 
-# Running the Glove service
+## Running the Glove service
 
 If you want to run your own Glove service, you will need to have a compatible AWS EC2 instance with AWS Nitro Enclaves
 enabled. You can follow the instructions [here](https://docs.aws.amazon.com/enclaves/latest/user/getting-started.html#launch-instance)
@@ -156,33 +165,33 @@ start the enclave in debug mode and output to the console.
 > Debug mode is not secure and will be reflected in the enclave's remote attestation and any Glove proofs created. Do
 > not enable this in production.
 
-# REST API
+## REST API
 
 The Glove service exposes a REST API for submitting votes and interacting with it.
 
-## `GET /info`
+### `GET /info`
 
 Get information about the Glove service, including the enclave. This can also act as a health check.
 
-### Request
+#### Request
 
 None
 
-### Response
+#### Response
 
 A JSON object with the following fields:
 
-#### `proxy_account`
+##### `proxy_account`
 
 The Glove proxy account address. Users will need to first assign this account as their
 [governance proxy](https://wiki.polkadot.network/docs/learn-proxies#proxy-types) before they can submit votes.
 
-#### `network_name`
+##### `network_name`
 
 The substrate-based network the Glove service is connected to. This is a [SS58](https://github.com/paritytech/ss58-registry)
 unique identifier.
 
-#### `attestation_bundle`
+##### `attestation_bundle`
 
 The attestation bundle of the enclave the service is using. This is a hex string representing the
 [`AttestationBundle`](common/src/attestation.rs#L38) struct in
@@ -191,11 +200,11 @@ The attestation bundle of the enclave the service is using. This is a hex string
 The attestation bundle is primarily used in Glove proofs when the enclave submits its mixed votes on-chain. It's
 available here for clients to verify the enclave's identity before submitting any votes.
 
-#### `version`
+##### `version`
 
 The version of the Glove service.
 
-#### Example
+##### Example
 
 ```json
 {
@@ -206,36 +215,36 @@ The version of the Glove service.
 }
 ```
 
-## `POST /vote`
+### `POST /vote`
 
 Submit a signed vote request to be included in the Glove mixing process.
 
 Multiple votes can be submitted for the same poll, but it's up to the discretion of the Glove service to accept them.
 If they are accepted they will replace the previous vote for that poll.
 
-### Request
+#### Request
 
 A JSON object with the following fields:
 
-#### `request`
+##### `request`
 
 [SCALE-encoded](https://docs.substrate.io/reference/scale-codec/) [`VoteRequest`](common/src/lib.rs#L57) as a
 hex string.
 
-#### `signature`
+##### `signature`
 
 [SCALE-encoded](https://docs.substrate.io/reference/scale-codec/)
 [`MultiSignature`](https://docs.rs/sp-runtime/latest/sp_runtime/enum.MultiSignature.html) as a hex string. The 
 signature is of the `VoteRequest` in SCALE-encoded bytes, i.e. the `request` field without the hex-encoding, signed by
 `VoteRequest.account`.
 
-#### Example
+##### Example
 
 [This example](common/test-resources/vote-request-example.mjs) shows how to create a signed vote request JSON body using
 the [Polkadot JS API](https://polkadot.js.org/docs). The request is made by the Bob dev account on the Rococo network
 for a vote of aye, on poll 185, using 2.23 ROC at 2x conviction.
 
-### Response
+#### Response
 
 If the vote request was successfully received and accepted by the service then an empty response with `200 OK` status
 code is returned. This does not mean, however, the vote was mixed and submitted on-chain; just that the Glove service
@@ -245,27 +254,27 @@ If request body is invalid then a `422 Unprocessable Entity` is returned. If the
 request itself then a `400 Bad Request` is returned with a JSON object containing the error type (`error`) and 
 description (`description`). `429 Too Many Requests` can also be returned and the request should be retried later.
 
-## `POST /remove-vote`
+### `POST /remove-vote`
 
 Submit a signed remove vote request for removing a previously submitted vote.
 
-### Request
+#### Request
 
 A JSON object with the following fields:
 
-#### `request`
+##### `request`
 
 [SCALE-encoded](https://docs.substrate.io/reference/scale-codec/) [`RemoveVoteRequest`](client-interface/src/lib.rs#L416)
 as a hex string.
 
-#### `signature`
+##### `signature`
 
 [SCALE-encoded](https://docs.substrate.io/reference/scale-codec/)
 [`MultiSignature`](https://docs.rs/sp-runtime/latest/sp_runtime/enum.MultiSignature.html) as a hex string. The 
 signature is of the `RemoveVoteRequest` in SCALE-encoded bytes, i.e. the `request` field without the hex-encoding, 
 signed by `RemoveVoteRequest.account`,
 
-### Response
+#### Response
 
 An empty response with `200 OK` status code is returned if the previous vote was successfully removed or if there was
 no matching vote.
@@ -274,19 +283,19 @@ If request body is invalid then a `422 Unprocessable Entity` is returned. If the
 request itself then a `400 Bad Request` is returned with a JSON object containing the error type (`error`) and 
 description (`description`). `429 Too Many Requests` can also be returned and the request should be retried later.
 
-## `GET /poll-info/{poll_index}`
+### `GET /poll-info/{poll_index}`
 
 Get Glove-specific information about poll with index `poll_index`.
 
-### Request
+#### Request
 
 None
 
-### Response
+#### Response
 
 A JSON object with the following fields:
 
-#### `mixing_time`
+##### `mixing_time`
 
 **Estimated** time the Glove service will mix vote requests and submit them on-chain. If the service hasn't received 
 requests for this poll then this is the time the service _would_ mix if it had. This field is only available for polls
@@ -298,7 +307,7 @@ The time is given in terms of both block number and UNIX timestamp seconds; the 
 
 If the poll is not active then `400 Bad Request` is returned.
 
-#### Example
+##### Example
 
 ```json
 {
@@ -309,13 +318,13 @@ If the poll is not active then `400 Bad Request` is returned.
 }
 ```
 
-# Development
+## Development
 
-## MacOS
+### MacOS
 
 If building on MacOS, then use `cargo` directly rather than the `./build.sh` script. Only mock mode will be available.
 
-## Regenerating the Substrate metadata
+### Regenerating the Substrate metadata
 
 You first need the `subxt-cli` tool installed:
 
@@ -329,12 +338,13 @@ Then run this in the home directory of this project:
 subxt metadata --url="wss://rpc.polkadot.io:443" -f bytes > assets/polkadot-metadata.scale
 ```
 
-# Deployment
+## Deployment
 
 This repo also has example configuration as code scripts for deployment of the Glove service, located in the
 [devops](devops) directory. Cloud infrastructure is handled by Terraform/OpenTofu and VM configuration by Ansible.
 
-## Terraform/OpenTofu
+### Terraform/OpenTofu
+
 The scripts in the [terraform](devops/terraform) subfolder are responsible for deployment of:
 - VM with Enclave,
 - Application Load Balancer (ALB),
@@ -345,11 +355,12 @@ The scripts in the [terraform](devops/terraform) subfolder are responsible for d
 
 Please note, that in the test TLS traffic terminates on the load balancer, not VM.
 
-## Ansible
+### Ansible
+
 In the [Ansible](devops/ansible) folder there is the glove role and the matching playbook with an inventory file for the test deployment.
 The role gets the latest binaries from the github, release page, sets systemd service for glove API host and prepare Nitro enclave.
 
-## GitHub Actions
+### GitHub Actions
 
 The Ansible playbook and the role are used in the release GHA. Whenever a new git tag is pushed, the action builds the
 binaries, and then uses Ansible to update the test deployment.
@@ -358,7 +369,7 @@ binaries, and then uses Ansible to update the test deployment.
 > The git tag **must** begin with `v` and match the project version in [Cargo.toml](Cargo.toml). This is important to 
 > ensure users download the correct version of the enclave code when verifying Glove proofs.
 
-## Debugging
+### Debugging
 
 To check the status of the service run:
 ```
