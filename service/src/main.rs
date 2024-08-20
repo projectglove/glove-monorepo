@@ -392,13 +392,16 @@ async fn is_poll_ready_for_final_mix(
     }
 }
 
-async fn info(context: State<Arc<GloveContext>>) -> Json<ServiceInfo> {
-    Json(ServiceInfo {
+async fn info(context: State<Arc<GloveContext>>) -> Result<Json<ServiceInfo>, InternalError> {
+    // Make sure the RPC connection is still alive
+    let current_block_number = context.network.current_block_number().await?;
+    debug!("Current block number: {}", current_block_number);
+    Ok(Json(ServiceInfo {
         proxy_account: context.network.account(),
         network_name: context.network.network_name.clone(),
         attestation_bundle: context.attestation_bundle.clone(),
         version: env!("CARGO_PKG_VERSION").to_string()
-    })
+    }))
 }
 
 // TODO Reject for zero balance
