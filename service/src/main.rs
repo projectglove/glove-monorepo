@@ -306,6 +306,7 @@ async fn mark_voted_polls_as_final(
 fn start_background_thread(context: Arc<GloveContext>, subscan: Subscan) {
     spawn(async move {
         loop {
+            debug!("Running background task...");
             if let Err(error) = run_background_task(context.clone(), subscan.clone()).await {
                 warn!("Error from background task: {:?}", error)
             }
@@ -377,13 +378,15 @@ async fn is_poll_ready_for_final_mix(
     network: &SubstrateNetwork
 ) -> Result<bool, SubxtError> {
     let now = network.current_block_number().await?;
-    match calculate_mixing_time(poll_status, network).await? {
-        MixingTime::Deciding(block_number) if block_number >= now => {
+    let mixing_time = calculate_mixing_time(poll_status, network).await?;
+    debug!("Mixing time for {} @ now={}: {:?}", poll_index, now, mixing_time);
+    match mixing_time {
+        MixingTime::Deciding(block_number) if now >= block_number => {
             info!("Poll {} is nearing the end of its decision period and will be mixed",
                 poll_index);
             Ok(true)
         }
-        MixingTime::Confirming(block_number) if block_number >= now => {
+        MixingTime::Confirming(block_number) if now >= block_number => {
             info!("Poll {} is nearing the end of its confirmation period and will be mixed",
                 poll_index);
             Ok(true)

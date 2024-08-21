@@ -50,6 +50,7 @@ pub async fn calculate_mixing_time(
     Ok(MixingTime::Deciding(decision_end - GLOVE_MIX_PERIOD))
 }
 
+#[derive(Debug)]
 pub enum MixingTime {
     Deciding(u32),
     Confirming(u32),
