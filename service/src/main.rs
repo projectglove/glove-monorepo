@@ -500,9 +500,20 @@ async fn poll_info(
     let current_time = context.network.current_time().await? / 1000;
     let mixing_time = calculate_mixing_time(status, &context.network).await?
         .block_number()
-        .map(|block_number| MixingTimeJson {
-            block_number,
-            timestamp: current_time + ((block_number - current_block) * BLOCK_TIME_SECS) as u64
+        .map(|block_number| {
+            let timestamp = if block_number > current_block {
+                current_time + ((block_number - current_block) * BLOCK_TIME_SECS) as u64
+            } else {
+                // Mixing time has already passed, which can occur either because:
+                // 1. The mixing block number has been reached but the service background thread
+                //    has yet to wake up from its 60s sleep
+                // 2. There are no vote requests for this poll, there won't be a mixing event, and
+                //    we're in the 15 min mixing buffer period at the end of the decision period
+                // 3. Some test networks can have really short decision periods, smaller even than
+                //    the mixing buffer period
+                current_time.saturating_sub(((current_block - block_number) * BLOCK_TIME_SECS) as u64)
+            };
+            MixingTimeJson { block_number, timestamp }
         });
     Ok(Json(PollInfo { mixing_time }))
 }
