@@ -6,4 +6,4 @@
     key: "{{ lookup('file', item) }}"
   loop:
     - noah.pub
-    - shams.pub
+    - yaki.pub
