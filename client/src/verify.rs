@@ -121,9 +121,7 @@ fn parse_glove_proof_lite(
         return None;
     }
 
-    let Some(calls) = extrinsic.get_param_as::<Vec<RuntimeCall>>("calls") else {
-        return None;
-    };
+    let calls = extrinsic.get_param_as::<Vec<RuntimeCall>>("calls")?;
 
     let remarks = calls
         .iter()
@@ -151,18 +149,12 @@ fn parse_and_validate_proxy_account_vote(
     let Some(MultiAddress::Id(real)) = batched_call.get_param_as::<MultiAddress>("real") else {
         return None;
     };
-    let Some(proxied_call) = batched_call.get_param_as::<RuntimeCall>("call") else {
-        return None;
-    };
+    let proxied_call = batched_call.get_param_as::<RuntimeCall>("call")?;
     if !proxied_call.is_extrinsic("convictionvoting", "vote") {
         return None;
     }
-    let Some(poll_index) = proxied_call.get_param_as::<u32>("poll_index") else {
-        return None;
-    };
-    let Some(vote) = proxied_call.get_param_as::<AccountVote>("vote") else {
-        return None;
-    };
+    let poll_index = proxied_call.get_param_as::<u32>("poll_index")?;
+    let vote = proxied_call.get_param_as::<AccountVote>("vote")?;
     if expected_poll_index != poll_index {
         return None;
     }
@@ -293,7 +285,10 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(verification_result.result.assigned_balances.len(), 3);
-        let enclave_measuremnt = verification_result.enclave_info.as_ref().map(|EnclaveInfo::Nitro(info)| info.image_measurement.clone());
+        let enclave_measuremnt = verification_result
+            .enclave_info
+            .as_ref()
+            .map(|EnclaveInfo::Nitro(info)| info.image_measurement.clone());
         assert_eq!(enclave_measuremnt, Some(from_hex("4d132e40ed8d6db60d01d0116c34a4a92914de73d668821b6e019b72ae152b1180ef7c8a378e6c1925fe2bcb31c0ec80").unwrap()));
         let expected_balances = vec![
             (

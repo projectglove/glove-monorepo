@@ -85,7 +85,8 @@ impl AttestationBundle {
     }
 
     pub fn decode_envelope(bytes: &[u8]) -> Result<Self, ScaleError> {
-        let version = bytes.first()
+        let version = bytes
+            .first()
             .ok_or_else(|| ScaleError::from("Empty bytes"))?;
         if *version != ATTESTATION_BUNDLE_ENCODING_VERSION {
             return Err(ScaleError::from("Unknown encoding version"));
@@ -144,7 +145,8 @@ impl GloveProofLite {
     }
 
     pub fn decode_envelope(bytes: &[u8]) -> Result<Self, ScaleError> {
-        let version = bytes.first()
+        let version = bytes
+            .first()
             .ok_or_else(|| ScaleError::from("Empty bytes"))?;
         if *version != GLOVE_PROOF_LITE_ENCODING_VERSION {
             return Err(ScaleError::from("Unknown encoding version"));

@@ -25,7 +25,7 @@ impl GloveStorage {
             GloveStorage::InMemory(store) => {
                 store.add_vote_request(signed_request).await;
                 Ok(())
-            },
+            }
             GloveStorage::Dynamodb(store) => store.add_vote_request(signed_request).await,
         }
     }
@@ -55,7 +55,7 @@ impl GloveStorage {
             GloveStorage::InMemory(store) => {
                 store.remove_poll(poll_index).await;
                 Ok(())
-            },
+            }
             GloveStorage::Dynamodb(store) => store.remove_poll(poll_index).await,
         }
     }

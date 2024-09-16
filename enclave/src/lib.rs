@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::str::FromStr;
 
@@ -105,12 +106,10 @@ pub fn mix_votes(
 
     Ok(GloveResult {
         poll_index,
-        direction: if ayes_balance > nays_balance {
-            VoteDirection::Aye
-        } else if ayes_balance < nays_balance {
-            VoteDirection::Nay
-        } else {
-            VoteDirection::Abstain
+        direction: match ayes_balance.cmp(&nays_balance) {
+            Ordering::Greater => VoteDirection::Aye,
+            Ordering::Less => VoteDirection::Nay,
+            Ordering::Equal => VoteDirection::Abstain,
         },
         assigned_balances,
     })

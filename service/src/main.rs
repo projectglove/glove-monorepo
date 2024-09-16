@@ -526,6 +526,7 @@ async fn remove_vote(
             )
             .await;
             match remove_result {
+                #[allow(non_snake_case)]
                 Err(ProxyError::Module(_, ConvictionVoting(NotVoter))) => {
                     debug!("Vote not found on-chain: {:?}", signed_request.request);
                 }
@@ -628,6 +629,7 @@ async fn try_mix_votes(context: &GloveContext, poll_index: u32) -> Result<bool, 
     }
 
     match result.unwrap_err() {
+        #[allow(non_snake_case)]
         ProxyError::Module(batch_index, ConvictionVoting(InsufficientFunds)) => {
             let request = &poll_requests[batch_index].request;
             warn!(
@@ -648,6 +650,7 @@ async fn try_mix_votes(context: &GloveContext, poll_index: u32) -> Result<bool, 
             }
             Ok(true)
         }
+        #[allow(non_snake_case)]
         ProxyError::Batch(BatchError::Module(batch_index, Proxy(NotProxy))) => {
             let request = &poll_requests[batch_index].request;
             warn!(
@@ -676,7 +679,7 @@ async fn try_mix_votes(context: &GloveContext, poll_index: u32) -> Result<bool, 
 
 async fn submit_glove_result_on_chain(
     context: &GloveContext,
-    signed_requests: &Vec<SignedVoteRequest>,
+    signed_requests: &[SignedVoteRequest],
     signed_glove_result: SignedGloveResult,
 ) -> Result<(), ProxyError> {
     let mut batched_calls = Vec::with_capacity(signed_requests.len() + 1);

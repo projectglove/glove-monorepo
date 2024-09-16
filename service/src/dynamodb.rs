@@ -24,6 +24,7 @@ pub struct DynamodbGloveStorage {
     partition_key: String,
     sort_key: String,
     client: Client,
+    #[allow(clippy::type_complexity)]
     cached_vote_accounts: Arc<Mutex<Option<HashMap<u32, HashSet<AccountId32>>>>>,
 }
 
