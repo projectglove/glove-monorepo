@@ -475,7 +475,7 @@ pub struct SplitAbstainAccountVote {
 }
 
 fn hex_deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
-    from_hex(&String::deserialize(deserializer)?).map_err(|e| de::Error::custom(e))
+    from_hex(&String::deserialize(deserializer)?).map_err(de::Error::custom)
 }
 
 #[derive(thiserror::Error, Debug)]

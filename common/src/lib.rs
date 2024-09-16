@@ -212,7 +212,7 @@ pub mod serde_over_hex_scale {
         T: Encode,
         S: Serializer,
     {
-        serializer.serialize_str(&to_hex(&value.encode()))
+        serializer.serialize_str(&to_hex(value.encode()))
     }
 
     pub fn deserialize<'de, T, D>(deserializer: D) -> Result<T, D::Error>
@@ -254,7 +254,7 @@ mod tests {
         let signature: MultiSignature = pair.sign(encoded_request.as_slice()).into();
 
         let signed_request = SignedVoteRequest { request, signature };
-        assert_eq!(signed_request.verify(), true);
+        assert!(signed_request.verify());
 
         let json = serde_json::to_string(&signed_request).unwrap();
         println!("{}", json);
@@ -293,7 +293,7 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(request.balance, 2230000000000);
-        assert_eq!(request.aye, true);
+        assert!(request.aye);
         assert_eq!(request.conviction, Conviction::Locked2x);
     }
 
@@ -321,7 +321,7 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(request.balance, 3230000000000);
-        assert_eq!(request.aye, false);
+        assert!(!request.aye);
         assert_eq!(request.conviction, Conviction::Locked4x);
     }
 
@@ -342,12 +342,12 @@ mod tests {
         let signature: MultiSignature = pair2.sign(encoded_request.as_slice()).into();
 
         let signed_request = SignedVoteRequest { request, signature };
-        assert_eq!(signed_request.verify(), false);
+        assert!(!signed_request.verify());
 
         let json = serde_json::to_string(&signed_request).unwrap();
         let deserialized_signed_request: SignedVoteRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized_signed_request, signed_request);
-        assert_eq!(deserialized_signed_request.verify(), false);
+        assert!(!deserialized_signed_request.verify());
     }
 
     #[test]
@@ -372,11 +372,11 @@ mod tests {
             },
             signature,
         };
-        assert_eq!(signed_request.verify(), false);
+        assert!(!signed_request.verify());
 
         let json = serde_json::to_string(&signed_request).unwrap();
         let deserialized: SignedVoteRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, signed_request);
-        assert_eq!(deserialized.verify(), false);
+        assert!(!deserialized.verify());
     }
 }

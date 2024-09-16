@@ -73,7 +73,7 @@ impl Attestation {
 
         let mut cert_chain = Stack::new()?;
         for ca_cert in &doc.cabundle {
-            cert_chain.push(X509::from_der(&ca_cert)?)?;
+            cert_chain.push(X509::from_der(ca_cert)?)?;
         }
 
         // Create the trust store containing the root AWS nitro cert, and also configured to use

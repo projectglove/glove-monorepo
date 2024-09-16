@@ -187,7 +187,7 @@ async fn get_ongoing_poll_indices(service_info: &ServiceInfo) -> Result<Vec<u32>
 
 async fn service_info(glove_url: &Url) -> Result<ServiceInfo, reqwest::Error> {
     let service_info = Client::new()
-        .get(url_with_path(&glove_url, "info"))
+        .get(url_with_path(glove_url, "info"))
         .send()
         .await?
         .error_for_status()?

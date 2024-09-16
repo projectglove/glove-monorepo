@@ -65,9 +65,9 @@ impl AttestationBundle {
                     .filter(|pcr0| pcr0.iter().any(|&byte| byte != 0)) // All zeros means debug mode
                     .map(|pcr0| pcr0.to_vec())
                     .ok_or(Error::InsecureMode)?;
-                let attested_data_hash = Sha256::digest(&self.attested_data.encode()).to_vec();
+                let attested_data_hash = Sha256::digest(self.attested_data.encode()).to_vec();
                 (attestation_doc.user_data == Some(ByteBuf::from(attested_data_hash)))
-                    .then(|| EnclaveInfo::Nitro(nitro::EnclaveInfo { image_measurement }))
+                    .then_some(EnclaveInfo::Nitro(nitro::EnclaveInfo { image_measurement }))
                     .ok_or(Error::AttestedData)
             }
             Attestation::Mock => Err(Error::InsecureMode),
@@ -85,8 +85,7 @@ impl AttestationBundle {
     }
 
     pub fn decode_envelope(bytes: &[u8]) -> Result<Self, ScaleError> {
-        let version = bytes
-            .get(0)
+        let version = bytes.first()
             .ok_or_else(|| ScaleError::from("Empty bytes"))?;
         if *version != ATTESTATION_BUNDLE_ENCODING_VERSION {
             return Err(ScaleError::from("Unknown encoding version"));
@@ -145,8 +144,7 @@ impl GloveProofLite {
     }
 
     pub fn decode_envelope(bytes: &[u8]) -> Result<Self, ScaleError> {
-        let version = bytes
-            .get(0)
+        let version = bytes.first()
             .ok_or_else(|| ScaleError::from("Empty bytes"))?;
         if *version != GLOVE_PROOF_LITE_ENCODING_VERSION {
             return Err(ScaleError::from("Unknown encoding version"));

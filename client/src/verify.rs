@@ -91,7 +91,7 @@ pub async fn try_verify_glove_result(
         }
     };
 
-    if Some(attestation_bundle.attested_data.genesis_hash) != genesis_hash(&subscan).await.ok() {
+    if Some(attestation_bundle.attested_data.genesis_hash) != genesis_hash(subscan).await.ok() {
         return Err(Error::ChainMismatch);
     }
 
@@ -136,7 +136,7 @@ fn parse_glove_proof_lite(
         return None;
     };
 
-    GloveProofLite::decode_envelope(&remark)
+    GloveProofLite::decode_envelope(remark)
         .map(|proof| (proof, calls))
         .ok()
 }
@@ -244,7 +244,7 @@ async fn get_attestation_bundle_from_remark(
     }
     extrinsic_detail
         .get_param_as::<HexString>("remark")
-        .and_then(|hex| AttestationBundle::decode_envelope(&mut hex.as_slice()).ok())
+        .and_then(|hex| AttestationBundle::decode_envelope(hex.as_slice()).ok())
         .ok_or_else(|| {
             Error::InvalidAttestationBundle(format!(
                 "Extrinsic at location {:?} does not contain a valid AttestationBundle",
@@ -293,10 +293,7 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(verification_result.result.assigned_balances.len(), 3);
-        let enclave_measuremnt = match &verification_result.enclave_info {
-            Some(EnclaveInfo::Nitro(info)) => Some(info.image_measurement.clone()),
-            None => None,
-        };
+        let enclave_measuremnt = verification_result.enclave_info.as_ref().map(|EnclaveInfo::Nitro(info)| info.image_measurement.clone());
         assert_eq!(enclave_measuremnt, Some(from_hex("4d132e40ed8d6db60d01d0116c34a4a92914de73d668821b6e019b72ae152b1180ef7c8a378e6c1925fe2bcb31c0ec80").unwrap()));
         let expected_balances = vec![
             (

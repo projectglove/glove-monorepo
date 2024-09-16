@@ -240,7 +240,7 @@ async fn check_excluded_tracks(context: &Arc<GloveContext>) -> anyhow::Result<()
     let mut excluded_track_infos = HashMap::new();
     for exclude_track_id in &context.exclude_tracks {
         let track_info = track_infos
-            .get(&exclude_track_id)
+            .get(exclude_track_id)
             .ok_or_else(|| anyhow!("Excluded track {} not found", exclude_track_id))?;
         excluded_track_infos.insert(exclude_track_id, &track_info.name);
     }
@@ -311,7 +311,7 @@ async fn mark_voted_polls_as_final(
             .await
             .voter_lookup;
         let proxy_has_voted = voter_lookup
-            .get_voters(&subscan)
+            .get_voters(subscan)
             .await?
             .into_iter()
             .any(|(_, sender)| sender == glove_proxy);
@@ -360,10 +360,8 @@ async fn run_background_task(context: Arc<GloveContext>, subscan: Subscan) -> an
                     poll_index
                 );
             }
-        } else if !mix_required {
-            if is_poll_ready_for_final_mix(poll_index, status, network).await? {
-                mix_required = true;
-            }
+        } else if !mix_required && is_poll_ready_for_final_mix(poll_index, status, network).await? {
+            mix_required = true;
         }
         if mix_required {
             mix_votes(&context, poll_index).await;
@@ -386,7 +384,7 @@ async fn check_non_glove_voters(
         .get_poll_state_ref(poll_index)
         .await
         .voter_lookup;
-    for (voter, sender) in voter_lookup.get_voters(&subscan).await? {
+    for (voter, sender) in voter_lookup.get_voters(subscan).await? {
         if sender == glove_proxy {
             continue;
         }
@@ -617,7 +615,7 @@ async fn try_mix_votes(context: &GloveContext, poll_index: u32) -> Result<bool, 
     )
     .await?;
 
-    let result = submit_glove_result_on_chain(&context, &poll_requests, signed_glove_result).await;
+    let result = submit_glove_result_on_chain(context, &poll_requests, signed_glove_result).await;
     if result.is_ok() {
         info!(
             "Successfully submitted mixed votes for poll {} on-chain",
@@ -692,7 +690,7 @@ async fn submit_glove_result_on_chain(
     let attestation_location = context
         .state
         .attestation_bundle_location(|| async {
-            submit_attestation_bundle_location_on_chain(&context).await
+            submit_attestation_bundle_location_on_chain(context).await
         })
         .await?;
 

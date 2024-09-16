@@ -138,7 +138,7 @@ fn process_mix_votes(
     for vote_request in vote_requests {
         println!("  {:?}", vote_request);
     }
-    match enclave::mix_votes(genesis_hash, &vote_requests) {
+    match enclave::mix_votes(genesis_hash, vote_requests) {
         Ok(glove_result) => EnclaveResponse::GloveResult(glove_result.sign(signing_key)),
         Err(error) => EnclaveResponse::Error(Error::Mixing(error.to_string())),
     }

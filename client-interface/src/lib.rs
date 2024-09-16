@@ -482,7 +482,7 @@ mod tests {
             json!({
                 "proxy_account": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
                 "network_name": "polkadot",
-                "attestation_bundle": to_hex(&service_info.attestation_bundle.encode()),
+                "attestation_bundle": to_hex(service_info.attestation_bundle.encode()),
                 "version": "1.0.0"
             })
         );

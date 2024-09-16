@@ -22,7 +22,10 @@ pub enum GloveStorage {
 impl GloveStorage {
     pub async fn add_vote_request(&self, signed_request: SignedVoteRequest) -> Result<(), Error> {
         match self {
-            GloveStorage::InMemory(store) => Ok(store.add_vote_request(signed_request).await),
+            GloveStorage::InMemory(store) => {
+                store.add_vote_request(signed_request).await;
+                Ok(())
+            },
             GloveStorage::Dynamodb(store) => store.add_vote_request(signed_request).await,
         }
     }
@@ -49,7 +52,10 @@ impl GloveStorage {
 
     pub async fn remove_poll(&self, poll_index: u32) -> Result<(), Error> {
         match self {
-            GloveStorage::InMemory(store) => Ok(store.remove_poll(poll_index).await),
+            GloveStorage::InMemory(store) => {
+                store.remove_poll(poll_index).await;
+                Ok(())
+            },
             GloveStorage::Dynamodb(store) => store.remove_poll(poll_index).await,
         }
     }

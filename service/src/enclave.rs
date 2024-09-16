@@ -97,8 +97,7 @@ pub mod mock {
 }
 
 fn local_file(file: &str) -> io::Result<PathBuf> {
-    env::args()
-        .nth(0)
+    env::args().next()
         .map(|exe| {
             Path::new(&exe)
                 .parent()
