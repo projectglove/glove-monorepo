@@ -33,13 +33,16 @@ impl Subscan {
     pub async fn get_polls(&self, status: PollStatus) -> Result<Vec<Poll>, Error> {
         let mut all_polls = Vec::new();
 
-        let mut request = PollsRequest { status, page: 0, row: 100 };
+        let mut request = PollsRequest {
+            status,
+            page: 0,
+            row: 100,
+        };
 
         loop {
-            let (headers, polls_response) = self.api_call_for::<PollsResponse>(
-                "scan/referenda/referendums",
-                &request
-            ).await?;
+            let (headers, polls_response) = self
+                .api_call_for::<PollsResponse>("scan/referenda/referendums", &request)
+                .await?;
             let Some(data) = polls_response.data else {
                 handle_error(headers, &polls_response.api_response, &request).await?;
                 continue;
@@ -57,7 +60,7 @@ impl Subscan {
     pub async fn get_votes(
         &self,
         poll_index: u32,
-        account: Option<AccountId32>
+        account: Option<AccountId32>,
     ) -> Result<Vec<ConvictionVote>, Error> {
         let mut all_votes = Vec::new();
 
@@ -70,10 +73,9 @@ impl Subscan {
         };
 
         loop {
-            let (headers, votes_response) = self.api_call_for::<VotesResponse>(
-                "scan/referenda/votes",
-                &request
-            ).await?;
+            let (headers, votes_response) = self
+                .api_call_for::<VotesResponse>("scan/referenda/votes", &request)
+                .await?;
             let Some(data) = votes_response.data else {
                 handle_error(headers, &votes_response.api_response, &request).await?;
                 continue;
@@ -89,12 +91,14 @@ impl Subscan {
     }
 
     pub async fn get_block(&self, block_number: u32) -> Result<Option<Block>, Error> {
-        let request = BlockRequest { block_num: block_number, only_head: true };
+        let request = BlockRequest {
+            block_num: block_number,
+            only_head: true,
+        };
         loop {
-            let (headers, block_response) = self.api_call_for::<BlockResponse>(
-                "scan/block",
-                &request
-            ).await?;
+            let (headers, block_response) = self
+                .api_call_for::<BlockResponse>("scan/block", &request)
+                .await?;
             if let Some(block) = block_response.data {
                 return Ok(Some(block));
             };
@@ -107,7 +111,7 @@ impl Subscan {
 
     pub async fn get_extrinsic(
         &self,
-        extrinsic_location: ExtrinsicLocation
+        extrinsic_location: ExtrinsicLocation,
     ) -> Result<Option<ExtrinsicDetail>, Error> {
         let request = ExtrinsicRequest {
             events_limit: 1,
@@ -115,10 +119,9 @@ impl Subscan {
             only_extrinsic_event: true,
         };
         loop {
-            let (headers, extrinsic_response) = self.api_call_for::<ExtrinsicResponse>(
-                "scan/extrinsic",
-                &request
-            ).await?;
+            let (headers, extrinsic_response) = self
+                .api_call_for::<ExtrinsicResponse>("scan/extrinsic", &request)
+                .await?;
             if extrinsic_response.api_response.code != 0 {
                 handle_error(headers, &extrinsic_response.api_response, &request).await?;
                 continue;
@@ -128,12 +131,13 @@ impl Subscan {
     }
 
     pub async fn get_token(&self) -> Result<Token, Error> {
-        let request = TokenRequest { include_extends: false };
+        let request = TokenRequest {
+            include_extends: false,
+        };
         loop {
-            let (headers, token_response) = self.api_call_for::<TokenResponse>(
-                "v2/scan/token/native",
-                &request
-            ).await?;
+            let (headers, token_response) = self
+                .api_call_for::<TokenResponse>("v2/scan/token/native", &request)
+                .await?;
             let Some(token) = token_response.data.and_then(|data| data.token) else {
                 handle_error(headers, &token_response.api_response, &request).await?;
                 continue;
@@ -145,17 +149,17 @@ impl Subscan {
     async fn api_call_for<Resp: DeserializeOwned>(
         &self,
         path: &str,
-        request: &(impl Serialize + ?Sized)
+        request: &(impl Serialize + ?Sized),
     ) -> Result<(HeaderMap, Resp), Error> {
-        let request_builder = self.http_client
-            .post(format!("https://{}.api.subscan.io/api/{}", self.network, path));
+        let request_builder = self.http_client.post(format!(
+            "https://{}.api.subscan.io/api/{}",
+            self.network, path
+        ));
         let request_builder = match &self.api_key {
             Some(api_key) => request_builder.header("X-API-Key", api_key),
-            None => request_builder
+            None => request_builder,
         };
-        let http_response = request_builder
-            .json(&request)
-            .send().await?;
+        let http_response = request_builder.json(&request).send().await?;
         let headers = http_response.headers().clone();
         let response = http_response.json::<Resp>().await?;
         Ok((headers, response))
@@ -165,7 +169,7 @@ impl Subscan {
 async fn handle_error(
     headers: HeaderMap,
     api_response: &ApiResponse,
-    request: &impl Debug
+    request: &impl Debug,
 ) -> Result<(), Error> {
     let retry_after = headers
         .get(RETRY_AFTER)
@@ -175,7 +179,10 @@ async fn handle_error(
             code: api_response.code,
             message: api_response.message.clone(),
         })?;
-    warn!("Rate limited, retrying after {} seconds ({:?})", retry_after, request);
+    warn!(
+        "Rate limited, retrying after {} seconds ({:?})",
+        retry_after, request
+    );
     sleep(Duration::from_secs(retry_after)).await;
     Ok(())
 }
@@ -183,7 +190,7 @@ async fn handle_error(
 #[derive(Debug, Clone, Deserialize)]
 struct ApiResponse {
     code: i64,
-    message: String
+    message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -214,7 +221,7 @@ struct PollsData {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Poll {
-    pub referendum_index: u32
+    pub referendum_index: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -255,7 +262,7 @@ pub struct ConvictionVote {
 #[derive(Debug, Clone, Serialize)]
 struct BlockRequest {
     block_num: u32,
-    only_head: bool
+    only_head: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -270,7 +277,7 @@ pub struct Block {
     pub block_num: u32,
     pub block_timestamp: u64,
     pub finalized: bool,
-    pub hash: HexString
+    pub hash: HexString,
 }
 
 #[serde_as]
@@ -279,7 +286,7 @@ struct ExtrinsicRequest {
     events_limit: u32,
     #[serde_as(as = "DisplayFromStr")]
     extrinsic_index: ExtrinsicLocation,
-    only_extrinsic_event: bool
+    only_extrinsic_event: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -299,17 +306,19 @@ pub struct ExtrinsicDetail {
     pub account_display: Option<Account>,
     pub call_module: String,
     pub call_module_function: String,
-    pub params: Vec<ExtrinsicParam>
+    pub params: Vec<ExtrinsicParam>,
 }
 
 impl ExtrinsicDetail {
     pub fn account_address(&self) -> Option<AccountId32> {
-        self.account_display.as_ref().map(|account| account.address.clone())
+        self.account_display
+            .as_ref()
+            .map(|account| account.address.clone())
     }
 
     pub fn is_extrinsic(&self, call_module: &str, call_module_function: &str) -> bool {
-        self.call_module.to_ascii_lowercase() == call_module &&
-            self.call_module_function.to_ascii_lowercase() == call_module_function
+        self.call_module.to_ascii_lowercase() == call_module
+            && self.call_module_function.to_ascii_lowercase() == call_module_function
     }
 
     pub fn get_param(&self, name: &str) -> Option<ExtrinsicParam> {
@@ -317,14 +326,15 @@ impl ExtrinsicDetail {
     }
 
     pub fn get_param_as<T: DeserializeOwned>(&self, name: &str) -> Option<T> {
-        self.get_param(name).and_then(|param| param.value_as::<T>().ok())
+        self.get_param(name)
+            .and_then(|param| param.value_as::<T>().ok())
     }
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExtrinsicParam {
     pub name: String,
-    pub value: serde_json::Value
+    pub value: serde_json::Value,
 }
 
 impl ExtrinsicParam {
@@ -335,7 +345,7 @@ impl ExtrinsicParam {
 
 #[derive(Debug, Clone, Serialize)]
 struct TokenRequest {
-    include_extends: bool
+    include_extends: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -372,7 +382,7 @@ impl Token {
 #[serde(transparent)]
 pub struct HexString {
     #[serde(deserialize_with = "hex_deserialize")]
-    pub value: Vec<u8>
+    pub value: Vec<u8>,
 }
 
 impl Deref for HexString {
@@ -391,7 +401,7 @@ impl AsRef<[u8]> for HexString {
 
 #[derive(Debug, PartialEq, Deserialize)]
 pub enum MultiAddress {
-    Id(AccountId32Ext)
+    Id(AccountId32Ext),
 }
 
 #[serde_as]
@@ -399,7 +409,7 @@ pub enum MultiAddress {
 #[serde(transparent)]
 pub struct AccountId32Ext {
     #[serde_as(as = "DisplayFromStr")]
-    pub value: AccountId32
+    pub value: AccountId32,
 }
 
 impl Deref for AccountId32Ext {
@@ -420,13 +430,13 @@ impl From<AccountId32> for AccountId32Ext {
 pub struct RuntimeCall {
     pub call_module: String,
     pub call_name: String,
-    pub params: Vec<ExtrinsicParam>
+    pub params: Vec<ExtrinsicParam>,
 }
 
 impl RuntimeCall {
     pub fn is_extrinsic(&self, call_module: &str, call_module_function: &str) -> bool {
-        self.call_module.to_ascii_lowercase() == call_module &&
-            self.call_name.to_ascii_lowercase() == call_module_function
+        self.call_module.to_ascii_lowercase() == call_module
+            && self.call_name.to_ascii_lowercase() == call_module_function
     }
 
     pub fn get_param(&self, name: &str) -> Option<ExtrinsicParam> {
@@ -434,14 +444,15 @@ impl RuntimeCall {
     }
 
     pub fn get_param_as<T: DeserializeOwned>(&self, name: &str) -> Option<T> {
-        self.get_param(name).and_then(|param| param.value_as::<T>().ok())
+        self.get_param(name)
+            .and_then(|param| param.value_as::<T>().ok())
     }
 }
 
 #[derive(Debug, PartialEq, Deserialize)]
 pub enum AccountVote {
     Standard(StandardAccountVote),
-    SplitAbstain(SplitAbstainAccountVote)
+    SplitAbstain(SplitAbstainAccountVote),
 }
 
 #[serde_as]
@@ -449,7 +460,7 @@ pub enum AccountVote {
 pub struct StandardAccountVote {
     #[serde_as(as = "DisplayFromStr")]
     pub balance: u128,
-    pub vote: u8
+    pub vote: u8,
 }
 
 #[serde_as]
@@ -460,7 +471,7 @@ pub struct SplitAbstainAccountVote {
     #[serde_as(as = "DisplayFromStr")]
     pub nay: u128,
     #[serde_as(as = "DisplayFromStr")]
-    pub abstain: u128
+    pub abstain: u128,
 }
 
 fn hex_deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
@@ -472,10 +483,7 @@ pub enum Error {
     #[error("Reqwest error: {0}")]
     Reqwest(#[from] reqwest::Error),
     #[error("API error: ({code}) {message}")]
-    Api {
-        code: i64,
-        message: String,
-    }
+    Api { code: i64, message: String },
 }
 
 #[cfg(test)]
@@ -515,7 +523,16 @@ mod tests {
         let extrinsic_param = serde_json::from_str::<ExtrinsicParam>(json).unwrap();
         assert_eq!(extrinsic_param.name, "real");
         let multi_address = extrinsic_param.value_as::<MultiAddress>().unwrap();
-        assert_eq!(multi_address, MultiAddress::Id(AccountId32::from_str("0xf40f4316f0adec098c14637d132a827ce6f36c930aca32a56a2cc65f7177be2b").unwrap().into()));
+        assert_eq!(
+            multi_address,
+            MultiAddress::Id(
+                AccountId32::from_str(
+                    "0xf40f4316f0adec098c14637d132a827ce6f36c930aca32a56a2cc65f7177be2b"
+                )
+                .unwrap()
+                .into()
+            )
+        );
     }
 
     #[test]
@@ -535,6 +552,12 @@ mod tests {
         let extrinsic_param = serde_json::from_str::<ExtrinsicParam>(json).unwrap();
         assert_eq!(extrinsic_param.name, "vote");
         let account_vote = extrinsic_param.value_as::<AccountVote>().unwrap();
-        assert_eq!(account_vote, AccountVote::Standard(StandardAccountVote { balance: 420964038408, vote: 2 }));
+        assert_eq!(
+            account_vote,
+            AccountVote::Standard(StandardAccountVote {
+                balance: 420964038408,
+                vote: 2
+            })
+        );
     }
 }

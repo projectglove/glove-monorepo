@@ -2,7 +2,7 @@ use std::env::args;
 use std::io;
 
 use cfg_if::cfg_if;
-use sp_core::{ed25519, H256, Pair};
+use sp_core::{ed25519, Pair, H256};
 
 use common::attestation::{Attestation, AttestationBundle, AttestedData};
 use common::SignedVoteRequest;
@@ -46,15 +46,21 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     // Send the attestation bundle to the host as the first thing it receives.
-    stream.write(&AttestationBundle { attested_data, attestation }).await?;
+    stream
+        .write(&AttestationBundle {
+            attested_data,
+            attestation,
+        })
+        .await?;
 
     // Loop, processing requests from the host. If the host termintes, it will close the stream,
     // break the loop and terminate the enclave as well.
     loop {
         let request = stream.read::<EnclaveRequest>().await?;
         let response = match request {
-            EnclaveRequest::MixVotes(vote_requests) =>
-                process_mix_votes(&vote_requests, &signing_pair, genesis_hash),
+            EnclaveRequest::MixVotes(vote_requests) => {
+                process_mix_votes(&vote_requests, &signing_pair, genesis_hash)
+            }
         };
         stream.write(&response).await?;
     }
@@ -82,7 +88,9 @@ mod nitro {
         Ok(EnclaveStream::Vsock(stream))
     }
 
-    pub(crate) fn create_attestation(attested_data: &AttestedData) -> Result<Attestation, anyhow::Error> {
+    pub(crate) fn create_attestation(
+        attested_data: &AttestedData,
+    ) -> Result<Attestation, anyhow::Error> {
         let attested_data_hash = Sha256::digest(attested_data.encode()).to_vec();
 
         let request = Request::Attestation {
@@ -101,7 +109,7 @@ mod nitro {
                     .map_err(|e| anyhow!(e.to_string()))?;
                 Ok(Attestation::Nitro(attestation))
             }
-            _ => Err(anyhow!("Unexpected NSM response: {:?}", response))
+            _ => Err(anyhow!("Unexpected NSM response: {:?}", response)),
         }
     }
 }
@@ -113,7 +121,10 @@ mod mock {
 
     pub(crate) async fn establish_connection(socket_file: String) -> io::Result<EnclaveStream> {
         let stream = UnixStream::connect(socket_file.clone()).await?;
-        println!("Connected to host as insecure mock enclave: {}", socket_file);
+        println!(
+            "Connected to host as insecure mock enclave: {}",
+            socket_file
+        );
         Ok(EnclaveStream::Unix(stream))
     }
 }
@@ -121,7 +132,7 @@ mod mock {
 fn process_mix_votes(
     vote_requests: &Vec<SignedVoteRequest>,
     signing_key: &ed25519::Pair,
-    genesis_hash: H256
+    genesis_hash: H256,
 ) -> EnclaveResponse {
     println!("Received mix votes request:");
     for vote_request in vote_requests {
@@ -129,6 +140,6 @@ fn process_mix_votes(
     }
     match enclave::mix_votes(genesis_hash, &vote_requests) {
         Ok(glove_result) => EnclaveResponse::GloveResult(glove_result.sign(signing_key)),
-        Err(error) => EnclaveResponse::Error(Error::Mixing(error.to_string()))
+        Err(error) => EnclaveResponse::Error(Error::Mixing(error.to_string())),
     }
 }

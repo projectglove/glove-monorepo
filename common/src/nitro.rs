@@ -1,14 +1,14 @@
-use aws_nitro_enclaves_cose::CoseSign1;
 use aws_nitro_enclaves_cose::crypto::Openssl;
 use aws_nitro_enclaves_cose::error::CoseError;
+use aws_nitro_enclaves_cose::CoseSign1;
 use aws_nitro_enclaves_nsm_api::api::AttestationDoc;
 use openssl::error::ErrorStack;
 use openssl::stack::Stack;
-use openssl::x509::{X509, X509StoreContext, X509VerifyResult};
 use openssl::x509::store::X509StoreBuilder;
 use openssl::x509::verify::X509VerifyParam;
-use parity_scale_codec::{Decode, Encode, Input, Output};
+use openssl::x509::{X509StoreContext, X509VerifyResult, X509};
 use parity_scale_codec::Error as ScaleError;
+use parity_scale_codec::{Decode, Encode, Input, Output};
 
 static ROOT_CA_BYTES: &[u8] = include_bytes!("../../assets/aws-nitro-root.pem");
 
@@ -35,8 +35,8 @@ impl Encode for Attestation {
 impl Decode for Attestation {
     fn decode<I: Input>(input: &mut I) -> Result<Self, ScaleError> {
         let bytes = Vec::<u8>::decode(input)?;
-        let cose_sign_1 = CoseSign1::from_bytes(&bytes)
-            .map_err(|_| ScaleError::from("Not a valid CoseSign1"))?;
+        let cose_sign_1 =
+            CoseSign1::from_bytes(&bytes).map_err(|_| ScaleError::from("Not a valid CoseSign1"))?;
         Ok(Self(cose_sign_1))
     }
 }
@@ -63,7 +63,8 @@ impl From<Attestation> for CoseSign1 {
 
 impl Attestation {
     pub fn verify(&self) -> Result<AttestationDoc, Error> {
-        let encoded_attestation_doc = self.0
+        let encoded_attestation_doc = self
+            .0
             .get_payload::<Openssl>(None)
             .map_err(|e| Error::Cose(e.to_string()))?;
         let doc = serde_cbor::from_slice::<AttestationDoc>(&encoded_attestation_doc)?;
@@ -91,12 +92,9 @@ impl Attestation {
         // Verify the cert chain and prove the certicate public key is a valid AWS nitro signing
         // key.
         let mut cert_ctx = X509StoreContext::new()?;
-        let valid = cert_ctx.init(
-            &trust_store,
-            &certificate,
-            &cert_chain,
-            |ctx| ctx.verify_cert()
-        )?;
+        let valid = cert_ctx.init(&trust_store, &certificate, &cert_chain, |ctx| {
+            ctx.verify_cert()
+        })?;
         if !valid {
             return Err(cert_ctx.error().into());
         }
@@ -129,7 +127,7 @@ pub enum Error {
     #[error("X.509 verification error: {0}")]
     CertVerify(#[from] X509VerifyResult),
     #[error("Invalid signature")]
-    Signature
+    Signature,
 }
 
 #[cfg(test)]
@@ -140,11 +138,15 @@ mod tests {
 
     use super::*;
 
-    static RAW_NITRO_ATTESTATION_BYTES: &[u8] = include_bytes!("../test-resources/raw-aws-nitro-attestation-doc");
+    static RAW_NITRO_ATTESTATION_BYTES: &[u8] =
+        include_bytes!("../test-resources/raw-aws-nitro-attestation-doc");
 
     #[test]
     fn decode_and_verify_attestation() {
-        let doc = Attestation::try_from(RAW_NITRO_ATTESTATION_BYTES).unwrap().verify().unwrap();
+        let doc = Attestation::try_from(RAW_NITRO_ATTESTATION_BYTES)
+            .unwrap()
+            .verify()
+            .unwrap();
         println!("{:?}", doc);
         assert_eq!(doc.pcrs.get(&0).unwrap().to_vec(), from_hex("dd1c94beae9a589b37f6601ecf73c297ff0bf41a8872f737fabf3c9a2a96eb3b1dcdabc8e33ba1f7654b528518b8b9ed").unwrap());
         assert_eq!(doc.pcrs.get(&1).unwrap().to_vec(), from_hex("52b919754e1643f4027eeee8ec39cc4a2cb931723de0c93ce5cc8d407467dc4302e86490c01c0d755acfe10dbf657546").unwrap());
@@ -156,9 +158,13 @@ mod tests {
 
     #[test]
     fn attestation_scale_encoding() {
-        let nitro_attestation = Attestation(CoseSign1::from_bytes(RAW_NITRO_ATTESTATION_BYTES).unwrap());
+        let nitro_attestation =
+            Attestation(CoseSign1::from_bytes(RAW_NITRO_ATTESTATION_BYTES).unwrap());
         let encoded = nitro_attestation.encode();
         let nitro_attestation2 = Attestation::decode(&mut &encoded[..]).unwrap();
-        assert_eq!(nitro_attestation.verify().unwrap(), nitro_attestation2.verify().unwrap());
+        assert_eq!(
+            nitro_attestation.verify().unwrap(),
+            nitro_attestation2.verify().unwrap()
+        );
     }
 }

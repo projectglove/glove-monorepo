@@ -6,10 +6,10 @@ use std::str::FromStr;
 use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use rand::random;
 use serde::{Deserialize, Serialize};
-use sp_core::{ed25519, H256, Pair};
 use sp_core::crypto::AccountId32;
-use sp_runtime::MultiSignature;
+use sp_core::{ed25519, Pair, H256};
 use sp_runtime::traits::Verify;
+use sp_runtime::MultiSignature;
 
 pub mod attestation;
 pub mod nitro;
@@ -23,7 +23,7 @@ pub struct SignedVoteRequest {
     #[serde(with = "serde_over_hex_scale")]
     pub request: VoteRequest,
     #[serde(with = "serde_over_hex_scale")]
-    pub signature: MultiSignature
+    pub signature: MultiSignature,
 }
 
 impl SignedVoteRequest {
@@ -42,7 +42,7 @@ const JS_SIGNING_POSTFIX: &[u8] = b"</Bytes>";
 pub fn verify_js_payload<E: Encode>(
     signature: &MultiSignature,
     payload: &E,
-    account: &AccountId32
+    account: &AccountId32,
 ) -> bool {
     let capacity = JS_SIGNING_PREFIX.len() + payload.size_hint() + JS_SIGNING_POSTFIX.len();
     let mut wrapped_bytes = Vec::with_capacity(capacity);
@@ -96,9 +96,17 @@ impl VoteRequest {
         poll_index: u32,
         aye: bool,
         balance: u128,
-        conviction: Conviction
+        conviction: Conviction,
     ) -> Self {
-        Self { account, genesis_hash, poll_index, nonce: random(), aye, balance, conviction }
+        Self {
+            account,
+            genesis_hash,
+            poll_index,
+            nonce: random(),
+            aye,
+            balance,
+            conviction,
+        }
     }
 }
 
@@ -108,7 +116,7 @@ impl VoteRequest {
 pub struct SignedGloveResult {
     pub result: GloveResult,
     /// Signature of `result` in SCALE endoding.
-    pub signature: ed25519::Signature
+    pub signature: ed25519::Signature,
 }
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
@@ -116,13 +124,16 @@ pub struct GloveResult {
     #[codec(compact)]
     pub poll_index: u32,
     pub direction: VoteDirection,
-    pub assigned_balances: Vec<AssignedBalance>
+    pub assigned_balances: Vec<AssignedBalance>,
 }
 
 impl GloveResult {
     pub fn sign(self, key: &ed25519::Pair) -> SignedGloveResult {
         let signature = key.sign(&self.encode());
-        SignedGloveResult { result: self, signature }
+        SignedGloveResult {
+            result: self,
+            signature,
+        }
     }
 }
 
@@ -130,7 +141,7 @@ impl GloveResult {
 pub enum VoteDirection {
     Aye,
     Nay,
-    Abstain
+    Abstain,
 }
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode, MaxEncodedLen)]
@@ -138,16 +149,28 @@ pub struct AssignedBalance {
     pub account: AccountId32,
     pub nonce: u32,
     pub balance: u128,
-    pub conviction: Conviction
+    pub conviction: Conviction,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Hash, Serialize, Deserialize,
-    Encode, Decode, MaxEncodedLen)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Hash,
+    Serialize,
+    Deserialize,
+    Encode,
+    Decode,
+    MaxEncodedLen,
+)]
 pub struct ExtrinsicLocation {
     pub block_number: u32,
     /// Index of the extrinsic within the block.
     #[codec(compact)]
-    pub extrinsic_index: u32
+    pub extrinsic_index: u32,
 }
 
 impl Display for ExtrinsicLocation {
@@ -160,10 +183,17 @@ impl FromStr for ExtrinsicLocation {
     type Err = &'static str;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (block_number, extrinsic_index) = s.split_once('-').ok_or("Invalid ExtrinsicLocation format")?;
+        let (block_number, extrinsic_index) = s
+            .split_once('-')
+            .ok_or("Invalid ExtrinsicLocation format")?;
         let block_number = block_number.parse().map_err(|_| "Invalid block number")?;
-        let extrinsic_index = extrinsic_index.parse().map_err(|_| "Invalid extrinsic index")?;
-        Ok(ExtrinsicLocation { block_number, extrinsic_index })
+        let extrinsic_index = extrinsic_index
+            .parse()
+            .map_err(|_| "Invalid extrinsic index")?;
+        Ok(ExtrinsicLocation {
+            block_number,
+            extrinsic_index,
+        })
     }
 }
 
@@ -172,15 +202,15 @@ impl FromStr for ExtrinsicLocation {
 /// as a hex string.
 pub mod serde_over_hex_scale {
     use parity_scale_codec::{Decode, Encode};
-    use serde::{Deserialize, Deserializer, Serializer};
     use serde::de::Error;
+    use serde::{Deserialize, Deserializer, Serializer};
     use sp_core::bytes::from_hex;
     use subxt::utils::to_hex;
 
     pub fn serialize<T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
     where
         T: Encode,
-        S: Serializer
+        S: Serializer,
     {
         serializer.serialize_str(&to_hex(&value.encode()))
     }
@@ -188,7 +218,7 @@ pub mod serde_over_hex_scale {
     pub fn deserialize<'de, T, D>(deserializer: D) -> Result<T, D::Error>
     where
         T: Decode,
-        D: Deserializer<'de>
+        D: Deserializer<'de>,
     {
         let bytes = from_hex(&String::deserialize(deserializer)?).map_err(Error::custom)?;
         T::decode(&mut bytes.as_slice()).map_err(Error::custom)
@@ -200,8 +230,8 @@ mod tests {
     use parity_scale_codec::Encode;
     use rand::random;
     use serde_json::{json, Value};
-    use sp_core::{Pair, sr25519};
     use sp_core::bytes::to_hex;
+    use sp_core::{sr25519, Pair};
     use subxt_signer::sr25519::dev;
 
     use Conviction::{Locked3x, Locked6x};
@@ -218,7 +248,7 @@ mod tests {
             11,
             true,
             100,
-            Locked3x
+            Locked3x,
         );
         let encoded_request = request.encode();
         let signature: MultiSignature = pair.sign(encoded_request.as_slice()).into();
@@ -257,7 +287,11 @@ mod tests {
         let request = signed_request.request;
         assert_eq!(request.account, dev::bob().public_key().0.into());
         assert_eq!(request.poll_index, 185);
-        assert_eq!(request.genesis_hash, H256::from_str("6408de7737c59c238890533af25896a2c20608d8b380bb01029acb392781063e").unwrap());
+        assert_eq!(
+            request.genesis_hash,
+            H256::from_str("6408de7737c59c238890533af25896a2c20608d8b380bb01029acb392781063e")
+                .unwrap()
+        );
         assert_eq!(request.balance, 2230000000000);
         assert_eq!(request.aye, true);
         assert_eq!(request.conviction, Conviction::Locked2x);
@@ -276,9 +310,16 @@ mod tests {
         println!("{:#?}", signed_request);
         assert!(signed_request.verify());
         let request = signed_request.request;
-        assert_eq!(request.account, AccountId32::from_str("5CyppCnQKiuY9c22yjHbDTpCqeHzAt7GXQpFAURxycWTS8My").unwrap());
+        assert_eq!(
+            request.account,
+            AccountId32::from_str("5CyppCnQKiuY9c22yjHbDTpCqeHzAt7GXQpFAURxycWTS8My").unwrap()
+        );
         assert_eq!(request.poll_index, 217);
-        assert_eq!(request.genesis_hash, H256::from_str("6408de7737c59c238890533af25896a2c20608d8b380bb01029acb392781063e").unwrap());
+        assert_eq!(
+            request.genesis_hash,
+            H256::from_str("6408de7737c59c238890533af25896a2c20608d8b380bb01029acb392781063e")
+                .unwrap()
+        );
         assert_eq!(request.balance, 3230000000000);
         assert_eq!(request.aye, false);
         assert_eq!(request.conviction, Conviction::Locked4x);
@@ -295,7 +336,7 @@ mod tests {
             11,
             true,
             100,
-            Locked3x
+            Locked3x,
         );
         let encoded_request = request.encode();
         let signature: MultiSignature = pair2.sign(encoded_request.as_slice()).into();
@@ -319,7 +360,7 @@ mod tests {
             11,
             true,
             100,
-            Locked6x
+            Locked6x,
         );
         let signature: MultiSignature = pair.sign(&original_request.encode()).into();
 
@@ -329,10 +370,9 @@ mod tests {
                 modified_request.aye = !original_request.aye;
                 modified_request
             },
-            signature
+            signature,
         };
         assert_eq!(signed_request.verify(), false);
-
 
         let json = serde_json::to_string(&signed_request).unwrap();
         let deserialized: SignedVoteRequest = serde_json::from_str(&json).unwrap();
