@@ -22,7 +22,10 @@ pub enum GloveStorage {
 impl GloveStorage {
     pub async fn add_vote_request(&self, signed_request: SignedVoteRequest) -> Result<(), Error> {
         match self {
-            GloveStorage::InMemory(store) => Ok(store.add_vote_request(signed_request).await),
+            GloveStorage::InMemory(store) => {
+                store.add_vote_request(signed_request).await;
+                Ok(())
+            }
             GloveStorage::Dynamodb(store) => store.add_vote_request(signed_request).await,
         }
     }
@@ -30,10 +33,12 @@ impl GloveStorage {
     pub async fn remove_vote_request(
         &self,
         poll_index: u32,
-        account: &AccountId32
+        account: &AccountId32,
     ) -> Result<bool, Error> {
         match self {
-            GloveStorage::InMemory(store) => Ok(store.remove_vote_request(poll_index, account).await),
+            GloveStorage::InMemory(store) => {
+                Ok(store.remove_vote_request(poll_index, account).await)
+            }
             GloveStorage::Dynamodb(store) => store.remove_vote_request(poll_index, account).await,
         }
     }
@@ -47,7 +52,10 @@ impl GloveStorage {
 
     pub async fn remove_poll(&self, poll_index: u32) -> Result<(), Error> {
         match self {
-            GloveStorage::InMemory(store) => Ok(store.remove_poll(poll_index).await),
+            GloveStorage::InMemory(store) => {
+                store.remove_poll(poll_index).await;
+                Ok(())
+            }
             GloveStorage::Dynamodb(store) => store.remove_poll(poll_index).await,
         }
     }
@@ -62,25 +70,30 @@ impl GloveStorage {
 
 #[derive(Clone, Default)]
 pub struct InMemoryGloveStorage {
-    polls: Arc<RwLock<HashMap<u32, BTreeMap<AccountId32, SignedVoteRequest>>>>
+    polls: Arc<RwLock<HashMap<u32, BTreeMap<AccountId32, SignedVoteRequest>>>>,
 }
 
 impl InMemoryGloveStorage {
     async fn add_vote_request(&self, signed_request: SignedVoteRequest) {
         let mut polls = self.polls.write().await;
-        polls.entry(signed_request.request.poll_index)
+        polls
+            .entry(signed_request.request.poll_index)
             .or_default()
             .insert(signed_request.request.account.clone(), signed_request);
     }
 
     async fn remove_vote_request(&self, poll_index: u32, account: &AccountId32) -> bool {
         let mut polls = self.polls.write().await;
-        polls.get_mut(&poll_index).map(|poll| poll.remove(account).is_some()).unwrap_or(false)
+        polls
+            .get_mut(&poll_index)
+            .map(|poll| poll.remove(account).is_some())
+            .unwrap_or(false)
     }
 
     async fn get_poll(&self, poll_index: u32) -> Vec<SignedVoteRequest> {
         let polls = self.polls.read().await;
-        let signed_vote_requests = polls.get(&poll_index)
+        let signed_vote_requests = polls
+            .get(&poll_index)
             .map(|poll| poll.values().cloned().collect())
             .unwrap_or_default();
         signed_vote_requests
@@ -106,13 +119,13 @@ pub enum Error {
     #[error("DynamoDB query error: {0}")]
     DynamodbQuery(#[from] SdkError<QueryError>),
     #[error("DynamoDB scan error: {0}")]
-    DynamodbScan(#[from] SdkError<ScanError>)
+    DynamodbScan(#[from] SdkError<ScanError>),
 }
 
 #[cfg(test)]
 mod tests {
-    use sp_runtime::MultiSignature;
     use sp_runtime::testing::sr25519;
+    use sp_runtime::MultiSignature;
     use subxt::utils::H256;
 
     use common::{Conviction, VoteRequest};
@@ -187,7 +200,7 @@ mod tests {
         account: AccountId32,
         poll_index: u32,
         aye: bool,
-        balance: u128
+        balance: u128,
     ) -> SignedVoteRequest {
         let request = VoteRequest::new(account, H256::zero(), poll_index, aye, balance, Locked1x);
         let signature = MultiSignature::Sr25519(sr25519::Signature::default());

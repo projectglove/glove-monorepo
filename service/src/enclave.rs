@@ -1,8 +1,8 @@
 use io::{Error as IoError, ErrorKind};
-use std::{env, io};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::{env, io};
 
 use parity_scale_codec::{DecodeAll, Encode};
 use tokio::sync::Mutex;
@@ -12,7 +12,7 @@ use enclave_interface::EnclaveStream;
 
 #[derive(Clone)]
 pub struct EnclaveHandle {
-    stream: Arc<Mutex<EnclaveStream>>
+    stream: Arc<Mutex<EnclaveStream>>,
 }
 
 impl EnclaveHandle {
@@ -47,21 +47,25 @@ pub mod nitro {
         debug!("AWS Nitro enclave cmd: {:?}", cmd);
         if debug_mode {
             let process = cmd.spawn()?;
-            debug!("Process to start AWS Nitro enclave, and capture its output, started: {}",
-                process.id());
+            debug!(
+                "Process to start AWS Nitro enclave, and capture its output, started: {}",
+                process.id()
+            );
         } else {
             let output = cmd.output()?;
             if !output.status.success() {
                 return Err(IoError::new(
                     ErrorKind::Other,
-                    format!("Failed to start AWS Nitro enclave: {:?}", output))
-                );
+                    format!("Failed to start AWS Nitro enclave: {:?}", output),
+                ));
             }
             debug!("AWS Nitro enclave started: {:?}", output);
         }
         let (stream, _) = listener.accept().await?;
         info!("AWS Nitro enclave connection established");
-        Ok(EnclaveHandle { stream: Arc::new(Mutex::new(EnclaveStream::Vsock(stream))) })
+        Ok(EnclaveHandle {
+            stream: Arc::new(Mutex::new(EnclaveStream::Vsock(stream))),
+        })
     }
 }
 
@@ -86,17 +90,30 @@ pub mod mock {
         debug!("Mock enclave process started: {}", process.id());
         let (stream, _) = listener.accept().await?;
         info!("Mock enclave connection established");
-        Ok(EnclaveHandle { stream: Arc::new(Mutex::new(EnclaveStream::Unix(stream))) })
+        Ok(EnclaveHandle {
+            stream: Arc::new(Mutex::new(EnclaveStream::Unix(stream))),
+        })
     }
 }
 
 fn local_file(file: &str) -> io::Result<PathBuf> {
     env::args()
-        .nth(0)
-        .map(|exe| Path::new(&exe).parent().unwrap_or(Path::new("/")).join(file).to_path_buf())
+        .next()
+        .map(|exe| {
+            Path::new(&exe)
+                .parent()
+                .unwrap_or(Path::new("/"))
+                .join(file)
+                .to_path_buf()
+        })
         .filter(|path| path.exists())
-        .ok_or_else(|| IoError::new(
-            ErrorKind::NotFound,
-            format!("'{}' executable not in the same directory as the service executable", file),
-        ))
+        .ok_or_else(|| {
+            IoError::new(
+                ErrorKind::NotFound,
+                format!(
+                    "'{}' executable not in the same directory as the service executable",
+                    file
+                ),
+            )
+        })
 }

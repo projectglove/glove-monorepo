@@ -22,7 +22,7 @@ async fn main() -> Result<()> {
     match args.command {
         Command::JoinGlove(cmd) => join_glove(args.glove_url, cmd).await?,
         Command::Vote(cmd) => vote(args.glove_url, cmd).await?,
-        Command::Extrinsic(ref cmd) => extrinsic(cmd.id, args).await?
+        Command::Extrinsic(ref cmd) => extrinsic(cmd.id, args).await?,
     }
     Ok(())
 }
@@ -52,7 +52,9 @@ async fn join_glove(glove_url: Url, cmd: JoinGloveCmd) -> Result<()> {
                     &format!("-g={}", glove_url),
                     "join-glove",
                     &format!("--secret-phrase={}", secret_phrase),
-                ]).await.unwrap();
+                ])
+                .await
+                .unwrap();
                 println!("{}. {}: {}", account_index, account, output);
             }
         });
@@ -66,7 +68,7 @@ async fn join_glove(glove_url: Url, cmd: JoinGloveCmd) -> Result<()> {
     Ok(())
 }
 
-async fn vote(glove_url: Url, cmd: VoteCmd) -> Result<()>{
+async fn vote(glove_url: Url, cmd: VoteCmd) -> Result<()> {
     let parallelism = cmd.accounts_args.parallelism()?;
 
     let poll_indices = if cmd.poll_index.is_empty() {
@@ -87,7 +89,7 @@ async fn vote(glove_url: Url, cmd: VoteCmd) -> Result<()>{
         aye_probability: f64,
         account_index: u8,
         secret_phrase: String,
-        account: AccountId32
+        account: AccountId32,
     }
 
     let mut vote_args = Vec::new();
@@ -100,7 +102,7 @@ async fn vote(glove_url: Url, cmd: VoteCmd) -> Result<()>{
                 aye_probability,
                 account_index,
                 secret_phrase,
-                account
+                account,
             });
         }
     }
@@ -140,9 +142,16 @@ async fn vote(glove_url: Url, cmd: VoteCmd) -> Result<()>{
                     args.push("--aye".to_string());
                 }
                 let output = client::run(args).await.unwrap();
-                println!("{}. {} poll={} balance={} conviction={} aye={}: {}",
-                       vote_arg.account_index, vote_arg.account, vote_arg.poll_index, balance,
-                       conviction, aye, output);
+                println!(
+                    "{}. {} poll={} balance={} conviction={} aye={}: {}",
+                    vote_arg.account_index,
+                    vote_arg.account,
+                    vote_arg.poll_index,
+                    balance,
+                    conviction,
+                    aye,
+                    output
+                );
             }
         });
     }
@@ -160,14 +169,16 @@ async fn extrinsic(extrinsic_location: ExtrinsicLocation, args: Args) -> Result<
     let subscan = Subscan::new(service_info.network_name, None);
     match subscan.get_extrinsic(extrinsic_location).await? {
         Some(extrinsic) => println!("{:#?}", extrinsic),
-        None => bail!("Extrinsic not found")
+        None => bail!("Extrinsic not found"),
     }
     Ok(())
 }
 
 async fn get_ongoing_poll_indices(service_info: &ServiceInfo) -> Result<Vec<u32>> {
     let subscan = Subscan::new(service_info.network_name.clone(), None);
-    let poll_indices = subscan.get_polls(PollStatus::Active).await?
+    let poll_indices = subscan
+        .get_polls(PollStatus::Active)
+        .await?
         .iter()
         .map(|poll| poll.referendum_index)
         .collect::<Vec<_>>();
@@ -176,10 +187,12 @@ async fn get_ongoing_poll_indices(service_info: &ServiceInfo) -> Result<Vec<u32>
 
 async fn service_info(glove_url: &Url) -> Result<ServiceInfo, reqwest::Error> {
     let service_info = Client::new()
-        .get(url_with_path(&glove_url, "info"))
-        .send().await?
+        .get(url_with_path(glove_url, "info"))
+        .send()
+        .await?
         .error_for_status()?
-        .json::<ServiceInfo>().await?;
+        .json::<ServiceInfo>()
+        .await?;
     Ok(service_info)
 }
 
@@ -203,7 +216,7 @@ enum Command {
 #[derive(Debug, Parser)]
 struct JoinGloveCmd {
     #[command(flatten)]
-    accounts_args: AccountsArgs
+    accounts_args: AccountsArgs,
 }
 
 #[derive(Debug, Parser)]
@@ -232,7 +245,7 @@ struct AccountsArgs {
     end_derivation: u8,
 
     #[arg(long, verbatim_doc_comment, default_value_t = 0)]
-    parallelism: u8
+    parallelism: u8,
 }
 
 impl AccountsArgs {
