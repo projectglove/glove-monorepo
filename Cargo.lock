@@ -1234,7 +1234,7 @@ checksum = "4b82cf0babdbd58558212896d1a4272303a57bdb245c2bf1147185fb45640e70"
 
 [[package]]
 name = "client"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "anyhow",
  "bigdecimal",
@@ -1258,7 +1258,7 @@ dependencies = [
 
 [[package]]
 name = "client-interface"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "anyhow",
  "common",
@@ -1287,7 +1287,7 @@ checksum = "0b6a852b24ab71dffc585bcb46eaf7959d175cb865a7152e35b348d1b2960422"
 
 [[package]]
 name = "common"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "aws-nitro-enclaves-cose",
  "aws-nitro-enclaves-nsm-api",
@@ -1823,7 +1823,7 @@ dependencies = [
 
 [[package]]
 name = "enclave"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "anyhow",
  "aws-nitro-enclaves-nsm-api",
@@ -1845,7 +1845,7 @@ dependencies = [
 
 [[package]]
 name = "enclave-interface"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "common",
  "nix 0.27.1",
@@ -4701,7 +4701,7 @@ dependencies = [
 
 [[package]]
 name = "service"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "anyhow",
  "aws-config",
@@ -5611,7 +5611,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stress-tool"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "anyhow",
  "clap",
