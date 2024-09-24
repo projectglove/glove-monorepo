@@ -13,7 +13,7 @@ resolver = "2"
 [workspace.package]
 homepage = "https://projectglove.io/"
 repository = "https://github.com/projectglove/glove-monorepo/"
-version = "0.0.15"
+version = "0.0.16"
 
 [workspace.dependencies]
 anyhow = "1.0.86"

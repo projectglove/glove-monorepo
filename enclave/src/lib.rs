@@ -7,7 +7,8 @@ use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
 use sp_core::H256;
 
-use common::{AssignedBalance, GloveResult, SignedVoteRequest, VoteDirection};
+use common::{AssignedBalance, Conviction, GloveResult, SignedVoteRequest, VoteDirection, VoteRequest};
+use Error::Overflow;
 
 pub fn mix_votes(
     genesis_hash: H256,
@@ -24,10 +25,10 @@ pub fn mix_votes(
     let multipler_range = Uniform::from(1.0..2.0);
 
     let mut accounts = HashSet::new();
-    let mut ayes_balance = 0u128;
-    let mut nays_balance = 0u128;
-    let mut randomized_balances: Vec<BigDecimal> = Vec::new();
-    let mut total_randomized_balance = BigDecimal::zero();
+    let mut aye_voting_power = 0u128;
+    let mut nay_voting_power = 0u128;
+    let mut voting_powers = Vec::<VotingPower>::new();
+    let mut total_randomized_voting_power = BigDecimal::zero();
 
     for signed_request in signed_requests {
         if signed_request.request.poll_index != poll_index {
@@ -42,54 +43,52 @@ pub fn mix_votes(
         if !accounts.insert(signed_request.request.account.clone()) {
             return Err(Error::DuplicateAccount);
         }
-        let balance = signed_request.request.balance;
+        let voting_power = VotingPower::try_from(
+            &signed_request.request,
+            multipler_range.sample(&mut rng)
+        )?;
         if signed_request.request.aye {
-            ayes_balance += balance;
+            aye_voting_power = aye_voting_power.checked_add(voting_power.base).ok_or(Overflow)?;
         } else {
-            nays_balance += balance;
+            nay_voting_power = nay_voting_power.checked_add(voting_power.base).ok_or(Overflow)?;
         }
-        let random_multiplier = multipler_range.sample(&mut rng);
-        let random_multiplier = BigDecimal::from_str(&random_multiplier.to_string()).unwrap();
-        let randomized_balance = random_multiplier * balance;
-        randomized_balances.push(randomized_balance.clone());
-        total_randomized_balance += randomized_balance;
+        total_randomized_voting_power += &voting_power.randomized;
+        voting_powers.push(voting_power);
     }
 
-    let net_balance = ayes_balance.abs_diff(nays_balance);
+    let total_net_voting_power = aye_voting_power.abs_diff(nay_voting_power);
 
-    let net_balances = if net_balance == 0 {
+    let net_balances = if total_net_voting_power == 0 {
         // TODO One token amount in the network decimals for the abstain balance
         vec![1; signed_requests.len()]
     } else {
-        let mut net_balances = signed_requests
-            .iter()
-            .zip(randomized_balances)
-            .map(|(signed_request, randomized_balance)| {
-                let weight = randomized_balance / &total_randomized_balance;
-                // It's possible the randomized weights will lead to a value greater than the request
-                // balance. This is more likely to happen if there are fewer requests and the random
-                // multiplier is sufficiently bigger relative to the others.
-                (net_balance * weight)
-                    .to_u128()
-                    .unwrap()
-                    .min(signed_request.request.balance)
-            })
-            .collect::<Vec<_>>();
-
-        let mut leftover_balance = net_balance - net_balances.iter().sum::<u128>();
-
-        let mut index = 0;
-        while leftover_balance > 0 {
-            if signed_requests[index].request.balance > net_balances[index] {
-                let balance_allowance =
-                    signed_requests[index].request.balance - net_balances[index];
-                let assign_extra_balance = leftover_balance.min(balance_allowance);
-                net_balances[index] += assign_extra_balance;
-                leftover_balance -= assign_extra_balance;
-            }
-            index += 1;
+        let mut net_voting_powers = Vec::<u128>::new();
+        let mut remaining_net_voting_power = total_net_voting_power;
+        for voting_power in &voting_powers {
+            let randomized_weight = &voting_power.randomized / &total_randomized_voting_power;
+            // It's possible the randomized weights will lead to a value greater than the request
+            // balance. This is more likely to happen if there are fewer requests and the random
+            // multiplier is sufficiently bigger relative to the others.
+            let net_voting_power = (total_net_voting_power * randomized_weight)
+                .to_u128()
+                .ok_or(Overflow)?
+                .min(voting_power.base);
+            remaining_net_voting_power = remaining_net_voting_power.saturating_sub(net_voting_power);
+            net_voting_powers.push(net_voting_power);
         }
 
+        for index in 0..net_voting_powers.len() {
+            let base_voting_power = &voting_powers[index].base;
+            let net_voting_power = net_voting_powers[index];
+            let topup = remaining_net_voting_power.min(base_voting_power - net_voting_power);
+            net_voting_powers[index] += topup;
+            remaining_net_voting_power -= topup;
+        }
+
+        let mut net_balances = Vec::<u128>::new();
+        for (net_voting_power, signed_request) in net_voting_powers.iter().zip(signed_requests) {
+            net_balances.push(to_balance(*net_voting_power, signed_request.request.conviction)?);
+        }
         net_balances
     };
 
@@ -106,13 +105,50 @@ pub fn mix_votes(
 
     Ok(GloveResult {
         poll_index,
-        direction: match ayes_balance.cmp(&nays_balance) {
+        direction: match aye_voting_power.cmp(&nay_voting_power) {
             Ordering::Greater => VoteDirection::Aye,
             Ordering::Less => VoteDirection::Nay,
             Ordering::Equal => VoteDirection::Abstain,
         },
         assigned_balances,
     })
+}
+
+fn to_voting_power(balance: u128, conviction: Conviction) -> Result<u128, Error> {
+    match conviction {
+        Conviction::None => Some(balance / 10),
+        Conviction::Locked1x => Some(balance),
+        Conviction::Locked2x => balance.checked_mul(2),
+        Conviction::Locked3x => balance.checked_mul(3),
+        Conviction::Locked4x => balance.checked_mul(4),
+        Conviction::Locked5x => balance.checked_mul(5),
+        Conviction::Locked6x => balance.checked_mul(6),
+    }.ok_or(Overflow)
+}
+
+fn to_balance(voting_power: u128, conviction: Conviction) -> Result<u128, Error> {
+    match conviction {
+        Conviction::None => voting_power.checked_mul(10).ok_or(Overflow),
+        Conviction::Locked1x => Ok(voting_power),
+        Conviction::Locked2x => Ok(voting_power / 2),
+        Conviction::Locked3x => Ok(voting_power / 3),
+        Conviction::Locked4x => Ok(voting_power / 4),
+        Conviction::Locked5x => Ok(voting_power / 5),
+        Conviction::Locked6x => Ok(voting_power / 6),
+    }
+}
+
+struct VotingPower {
+    base: u128,
+    randomized: BigDecimal
+}
+
+impl VotingPower {
+    fn try_from(request: &VoteRequest, random_multiplier: f64) -> Result<Self, Error> {
+        let base = to_voting_power(request.balance, request.conviction)?;
+        let randomized = base * BigDecimal::from_str(&random_multiplier.to_string()).unwrap();
+        Ok(Self { base, randomized })
+    }
 }
 
 #[derive(thiserror::Error, Debug, Copy, Clone, PartialEq)]
@@ -127,6 +163,8 @@ pub enum Error {
     GensisHashMismatch,
     #[error("Duplicate account in vote requests")]
     DuplicateAccount,
+    #[error("Arthmetic overflow in mixing calculation")]
+    Overflow
 }
 
 #[cfg(test)]
@@ -135,9 +173,9 @@ mod tests {
     use sp_core::{ed25519, Pair};
     use sp_runtime::MultiSignature;
 
-    use common::Conviction::{Locked1x, Locked3x, Locked5x};
+    use common::Conviction::{Locked1x, Locked2x, Locked3x, Locked5x};
     use common::{Conviction, VoteRequest};
-    use Conviction::Locked6x;
+    use Conviction::{Locked4x, Locked6x};
 
     use super::*;
 
@@ -152,21 +190,14 @@ mod tests {
     #[test]
     fn single() {
         let signed_requests = vec![vote(434, true, 10, Locked6x)];
-        assert_eq!(
-            mix_votes(GENESIS_HASH, &signed_requests),
-            Ok(GloveResult {
-                poll_index: POLL_INDEX,
-                direction: VoteDirection::Aye,
-                assigned_balances: vec![assigned(&signed_requests[0], 10)]
-            })
-        );
+        mix_votes_and_check(signed_requests, VoteDirection::Aye, 60);
     }
 
     #[test]
-    fn two_equal_but_opposite_votes() {
+    fn two_votes_with_equal_but_opposite_voting_powers() {
         let signed_requests = vec![
-            vote(4, true, 10, Locked5x),
-            vote(7, false, 10, Conviction::None),
+            vote(4, true, 10, Locked5x),   // 10 * 5 = 50
+            vote(7, false, 25, Locked2x),  // 25 * 2 = 50
         ];
         assert_eq!(
             mix_votes(GENESIS_HASH, &signed_requests),
@@ -184,75 +215,33 @@ mod tests {
     #[test]
     fn two_aye_votes() {
         let signed_requests = vec![vote(1, true, 10, Locked1x), vote(2, true, 5, Locked1x)];
-        assert_eq!(
-            mix_votes(GENESIS_HASH, &signed_requests),
-            Ok(GloveResult {
-                poll_index: POLL_INDEX,
-                direction: VoteDirection::Aye,
-                assigned_balances: vec![
-                    assigned(&signed_requests[0], 10),
-                    assigned(&signed_requests[1], 5)
-                ]
-            })
-        );
+        mix_votes_and_check(signed_requests, VoteDirection::Aye, 15);
     }
 
     #[test]
     fn two_nay_votes() {
         let signed_requests = vec![vote(3, false, 5, Locked3x), vote(2, false, 10, Locked1x)];
-        assert_eq!(
-            mix_votes(GENESIS_HASH, &signed_requests),
-            Ok(GloveResult {
-                poll_index: POLL_INDEX,
-                direction: VoteDirection::Nay,
-                assigned_balances: vec![
-                    assigned(&signed_requests[0], 5),
-                    assigned(&signed_requests[1], 10)
-                ]
-            })
-        );
+        mix_votes_and_check(signed_requests, VoteDirection::Nay, 25);
     }
 
     #[test]
-    fn aye_votes_bigger_than_nye_votes() {
+    fn aye_voting_power_bigger_than_nay_voting_power() {
         let signed_requests = vec![
-            vote(3, true, 30, Locked3x),
-            vote(7, true, 20, Locked5x),
-            vote(1, false, 26, Conviction::None),
-            vote(4, false, 4, Locked6x),
+            vote(3, true, 3000, Locked3x),           // 3000 * 3 = 9000
+            vote(7, true, 2000, Locked5x),           // 2000 * 5 = 10000
+            vote(1, false, 5000, Conviction::None),  // 5000 * 0.1 = 500
+            vote(4, false, 400, Locked6x),           // 400 * 6 = 2400
         ];
-        let result = mix_votes(GENESIS_HASH, &signed_requests).unwrap();
-        println!("{:?}", result);
-
-        assert_eq!(result.direction, VoteDirection::Aye);
-        assert_eq!(result.assigned_balances.len(), 4);
-        assert_eq!(
-            result
-                .assigned_balances
-                .iter()
-                .map(|a| a.balance)
-                .sum::<u128>(),
-            20
-        );
-        assert(signed_requests, result.assigned_balances);
+        mix_votes_and_check(signed_requests, VoteDirection::Aye, 16100);
     }
 
     #[test]
-    fn aye_votes_smaller_than_nye_votes() {
-        let signed_requests = vec![vote(6, false, 32, Locked1x), vote(8, true, 15, Locked3x)];
-        let result = mix_votes(GENESIS_HASH, &signed_requests).unwrap();
-
-        assert_eq!(result.direction, VoteDirection::Nay);
-        assert_eq!(result.assigned_balances.len(), 2);
-        assert_eq!(
-            result
-                .assigned_balances
-                .iter()
-                .map(|a| a.balance)
-                .sum::<u128>(),
-            17
-        );
-        assert(signed_requests, result.assigned_balances);
+    fn aye_voting_power_smaller_than_nay_voting_power() {
+        let signed_requests = vec![
+            vote(6, false, 10, Locked5x),  // 10 * 5 = 50
+            vote(8, true, 45, Locked1x)    // 45 * 1 = 45
+        ];
+        mix_votes_and_check(signed_requests, VoteDirection::Nay, 5);
     }
 
     #[test]
@@ -382,10 +371,47 @@ mod tests {
         }
     }
 
-    fn assert(signed_requests: Vec<SignedVoteRequest>, assigned_balances: Vec<AssignedBalance>) {
-        for (signed_request, assigned_balance) in signed_requests.iter().zip(assigned_balances) {
-            assert_eq!(signed_request.request.nonce, assigned_balance.nonce);
-            assert!(assigned_balance.balance <= signed_request.request.balance);
+    fn mix_votes_and_check(
+        signed_requests: Vec<SignedVoteRequest>,
+        expected_direction: VoteDirection,
+        expected_net_voting_power: u128,
+    ) {
+        let glove_result = mix_votes(GENESIS_HASH, &signed_requests).unwrap();
+        println!("{:#?}", glove_result);
+
+        assert_eq!(glove_result.poll_index, POLL_INDEX);
+        assert_eq!(glove_result.direction, expected_direction);
+        assert_eq!(glove_result.assigned_balances.len(), signed_requests.len());
+
+        for (sr, ab) in signed_requests.iter().zip(&glove_result.assigned_balances) {
+            assert_eq!(sr.request.nonce, ab.nonce);
+            assert!(ab.balance <= sr.request.balance);
         }
+
+        let actual_net_voting_power = glove_result
+            .assigned_balances
+            .iter()
+            .map(|ab| to_voting_power(ab.balance, ab.conviction).unwrap())
+            .sum::<u128>();
+        assert!(actual_net_voting_power <= expected_net_voting_power);
+
+        let voting_power_shortfall = expected_net_voting_power - actual_net_voting_power;
+        // For any mixing request of size N, the maximum shortfall in the voting power that can
+        // occur is 5N. This is not an issue as it's negligibly small compared to the Plank
+        // multiplier (e.g. 10^10 for DOT).
+        let max_possible_shortfall_due_to_integer_division = glove_result
+            .assigned_balances
+            .iter()
+            .map(|ab| match ab.conviction {
+                Conviction::None => 0,
+                Locked1x => 0,
+                Locked2x => 1,
+                Locked3x => 2,
+                Locked4x => 3,
+                Locked5x => 4,
+                Locked6x => 5,
+            })
+            .sum::<u128>();
+        assert!(voting_power_shortfall <= max_possible_shortfall_due_to_integer_division);
     }
 }
