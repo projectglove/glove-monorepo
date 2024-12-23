@@ -9,8 +9,7 @@ glove_db: dynamodb
 glove_db_table: glove
 
 # URL to a substrate node endpoint
-# See https://wiki.polkadot.network/docs/maintain-endpoints for more information
-glove_node_endpoint: "wss://rococo-rpc.polkadot.io"
+glove_node_endpoint: "wss://rpc-kusama.luckyfriday.io/"
 
 # Secret phrase for the Glove proxy account.
 # See https://wiki.polkadot.network/docs/learn-account-advanced#derivation-paths for more details.
