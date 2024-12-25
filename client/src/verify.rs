@@ -269,6 +269,8 @@ mod tests {
 
     use super::*;
 
+    // test suite being rewritten with rococo deprecation
+    /*
     #[tokio::test]
     async fn verification_of_sample_glove_result() {
         let subscan = Subscan::new("rococo".into(), None);
@@ -317,4 +319,5 @@ mod tests {
             );
         }
     }
+        */
 }
